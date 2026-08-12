@@ -1,7 +1,6 @@
 package scope
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -84,9 +83,34 @@ func TestPolicyExclusionWins(t *testing.T) {
 	}
 }
 
-func TestNewPolicyRejectsNormalizedDuplicates(t *testing.T) {
-	_, err := NewPolicy([]string{"example.com", "EXAMPLE.COM."}, nil)
-	if !errors.Is(err, ErrDuplicateTarget) {
-		t.Fatalf("NewPolicy() error = %v, want ErrDuplicateTarget", err)
+func TestNewPolicyRemovesNormalizedDuplicates(t *testing.T) {
+	policy, err := NewPolicy(
+		[]string{"example.com", "EXAMPLE.COM."},
+		[]string{"192.0.2.1", "192.0.2.1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Allowed) != 1 {
+		t.Fatalf("len(policy.Allowed) = %d, want 1", len(policy.Allowed))
+	}
+	if len(policy.Excluded) != 1 {
+		t.Fatalf("len(policy.Excluded) = %d, want 1", len(policy.Excluded))
+	}
+}
+
+func TestEffectiveTargetsAppliesExclusions(t *testing.T) {
+	policy, err := NewPolicy(
+		[]string{"example.com", "192.0.2.1"},
+		[]string{"EXAMPLE.COM."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	effective := EffectiveTargets(policy)
+	want := []model.Target{{Kind: model.TargetIP, Value: "192.0.2.1"}}
+	if len(effective) != len(want) || effective[0] != want[0] {
+		t.Fatalf("EffectiveTargets() = %#v, want %#v", effective, want)
 	}
 }

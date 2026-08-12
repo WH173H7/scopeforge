@@ -10,10 +10,33 @@ import (
 )
 
 var (
-	ErrEmptyTarget     = errors.New("target is empty")
-	ErrInvalidTarget   = errors.New("target is not a valid DNS name or IP address")
-	ErrDuplicateTarget = errors.New("scope contains a duplicate target")
+	ErrEmptyTarget   = errors.New("target is empty")
+	ErrInvalidTarget = errors.New("target is not a valid DNS name or IP address")
 )
+
+// InputError identifies which scope input list contains an invalid target.
+type InputError struct {
+	exclusion bool
+	index     int
+	err       error
+}
+
+func (err *InputError) Error() string {
+	listName := "allowed"
+	if err.exclusion {
+		listName = "excluded"
+	}
+	return fmt.Sprintf("%s target %d: %v", listName, err.index, err.err)
+}
+
+func (err *InputError) Unwrap() error {
+	return err.err
+}
+
+// IsExclusion reports whether the invalid input came from the exclusion list.
+func (err *InputError) IsExclusion() bool {
+	return err.exclusion
+}
 
 // ParseTarget validates and normalizes an exact DNS name or IP address.
 func ParseTarget(value string) (model.Target, error) {
@@ -47,11 +70,11 @@ func NewPolicy(allowed, excluded []string) (model.ScopePolicy, error) {
 	}
 
 	var err error
-	policy.Allowed, err = parseUnique("allowed", allowed)
+	policy.Allowed, err = parseUnique(false, allowed)
 	if err != nil {
 		return model.ScopePolicy{}, err
 	}
-	policy.Excluded, err = parseUnique("excluded", excluded)
+	policy.Excluded, err = parseUnique(true, excluded)
 	if err != nil {
 		return model.ScopePolicy{}, err
 	}
@@ -67,21 +90,32 @@ func Allows(policy model.ScopePolicy, target model.Target) bool {
 	return contains(policy.Allowed, target)
 }
 
-func parseUnique(listName string, values []string) ([]model.Target, error) {
+func parseUnique(exclusion bool, values []string) ([]model.Target, error) {
 	targets := make([]model.Target, 0, len(values))
 	seen := make(map[model.Target]struct{}, len(values))
 	for index, value := range values {
 		target, err := ParseTarget(value)
 		if err != nil {
-			return nil, fmt.Errorf("%s target %d: %w", listName, index+1, err)
+			return nil, &InputError{exclusion: exclusion, index: index + 1, err: err}
 		}
 		if _, exists := seen[target]; exists {
-			return nil, fmt.Errorf("%w in %s list: %s", ErrDuplicateTarget, listName, target.Value)
+			continue
 		}
 		seen[target] = struct{}{}
 		targets = append(targets, target)
 	}
 	return targets, nil
+}
+
+// EffectiveTargets returns explicitly allowed targets after applying exclusions.
+func EffectiveTargets(policy model.ScopePolicy) []model.Target {
+	targets := make([]model.Target, 0, len(policy.Allowed))
+	for _, target := range policy.Allowed {
+		if !contains(policy.Excluded, target) {
+			targets = append(targets, target)
+		}
+	}
+	return targets
 }
 
 func contains(targets []model.Target, target model.Target) bool {

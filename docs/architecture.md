@@ -2,7 +2,8 @@
 
 ## Status and intent
 
-This document records the M0 foundation for ScopeForge. It describes intended
+This document records the M0 foundation and M1 scope-validation command for
+ScopeForge. It describes intended
 boundaries where later implementation depends on them, but it does not claim
 those components exist. ScopeForge is designed for authorised, primarily
 passive reconnaissance. Active assessment is not part of the first milestone.
@@ -67,8 +68,8 @@ addresses.
 
 `ScopePolicy` contains explicit allowed targets and explicit exclusions.
 Evaluation is deny-by-default, uses exact normalized equality, and applies an
-exclusion before an allowance. Duplicate entries are rejected to expose
-configuration mistakes. M0 does not support CIDRs, wildcards, suffix matching,
+exclusion before an allowance. Normalized duplicate entries are removed while
+preserving their first occurrence. ScopeForge does not support CIDRs, wildcards, suffix matching,
 or automatic scope expansion.
 
 Future relationship discovery must record a candidate asset before collection.
@@ -98,9 +99,22 @@ yet; its exact shape should be driven by the first two real collectors.
   `errors.Is` checks.
 - Messages exposed in JSON use stable codes for automation; prose is not an API.
 
+The `validate-scope` external error codes are `invalid_target`,
+`invalid_exclusion`, `missing_target`, `empty_effective_scope`,
+`invalid_format`, and `invalid_usage`. These codes describe expected user
+failures without exposing Go types or wrapped internal errors. When JSON is
+selected, an expected error has this shape:
+
+```json
+{"error":{"code":"invalid_target","message":"target is invalid"}}
+```
+
 ## Logging
 
-Result output belongs on stdout; operational logs belong on stderr. Logging
+Successful result output belongs on stdout; operational logs and text-mode
+diagnostics belong on stderr. A JSON-mode expected error is emitted as the only
+value on stdout so automation receives valid structured output; stderr remains
+empty unless writing that result itself fails. Logging
 will use structured key/value records through the standard library's `log/slog`.
 Default level is `INFO`, with an explicit verbose option enabling `DEBUG`.
 Fields should use stable names such as `run_id`, `collector`, `target`, and
@@ -121,26 +135,46 @@ Configuration file format and environment variable names are deferred until a
 setting exists that cannot be represented clearly by flags. Future defaults
 must include finite network timeouts and bounded concurrency.
 
-## Initial CLI design
+## CLI
 
 ```text
 scopeforge help
 scopeforge version
 scopeforge validate-scope --target TARGET [--target TARGET...] \
   [--exclude TARGET...] [--format text|json]
-scopeforge run --target TARGET [--target TARGET...] \
-  [--exclude TARGET...] [--format text|json]
 ```
 
-M0 implements only `help` and `version`. The other commands describe M1's
-intended user interface. Repeated flags avoid ambiguous comma splitting. Text
-is the interactive default; JSON must be selected explicitly and will contain
-no decorative output. Unknown commands, flags, and formats are errors.
+M1 implements `validate-scope` using the standard library `flag` package.
+Repeated flags avoid ambiguous comma splitting. Text is the interactive
+default; JSON must be selected explicitly and contains no decorative output.
+Unknown commands, flags, positional arguments, and formats are errors.
 
-Exit codes will be documented before `run` is implemented. The intended
-categories are success, invalid invocation/configuration, scope rejection, and
-run failure. Partial collector failures must be represented in result data and
-have a documented exit behavior rather than being guessed by each collector.
+Process termination remains in `main`; command execution returns a code and
+writes to injected streams so behavior is directly testable. Exit codes are:
+
+```text
+0  success
+1  unexpected internal failure
+2  CLI or usage failure
+3  scope validation failure
+```
+
+Rendering is implemented separately from policy validation. The text renderer
+sorts normalized targets by kind and value. JSON uses the same deterministic
+ordering and this version 1 contract:
+
+```json
+{
+  "schema_version": "1",
+  "targets": [{"kind": "dns", "value": "example.com"}],
+  "exclusions": [],
+  "effective_target_count": 1
+}
+```
+
+Incompatible structured-output changes require a schema-version change.
+Partial future collector failures still need documented exit behavior before
+the `run` command is implemented.
 
 ## Testing strategy
 

@@ -1,9 +1,8 @@
 # ScopeForge
 
 ScopeForge is an early-stage, scope-aware reconnaissance and attack-surface
-mapping CLI for authorised security assessments. The repository currently
-contains the M0 engineering foundation: design documentation, an initial data
-model, and exact target/scope validation. It does not yet perform
+mapping CLI for authorised security assessments. It currently validates and
+displays explicit exact-match scope policies. It does not yet perform
 reconnaissance or make network requests.
 
 ScopeForge is intended to grow toward passive DNS, certificate, RDAP, and HTTP
@@ -15,11 +14,23 @@ human-readable reports. Active assessment is outside the first milestone.
 ```text
 scopeforge help
 scopeforge version
+scopeforge validate-scope --target VALUE [options]
 ```
 
-The proposed next interface is documented in
-[docs/architecture.md](docs/architecture.md). Commands that collect or validate
-user-supplied targets are not implemented in M0.
+`--target` and `--exclude` are repeatable and accept exact DNS names or IP
+addresses. `--format` accepts `text` (the default) or `json`.
+
+```sh
+scopeforge validate-scope --target example.com --target 192.0.2.10
+scopeforge validate-scope --target example.com --exclude example.com
+scopeforge validate-scope --target example.com --format json
+```
+
+Authorization does not extend to related names. Authorizing `example.com` does
+not authorize `api.example.com` or any other subdomain. Exclusions take
+precedence over targets, and validation fails if no effective target remains.
+Text output is intended for people; JSON output uses a versioned deterministic
+contract for automation.
 
 ## Development
 
