@@ -279,6 +279,35 @@ func TestCollectTreatsResolverNotFoundAsNoResult(t *testing.T) {
 	t.Fatal("missing MX outcome")
 }
 
+func TestCollectPreservesNullMX(t *testing.T) {
+	policy, target := policyAndTarget(t, "example.com")
+	resolver := &fakeResolver{
+		responses: map[string]resolverResponse{},
+		mxRecords: []*net.MX{{Host: ".", Pref: 0}},
+	}
+	evidence, outcomes, err := Collect(context.Background(), resolver, policy, target, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nullMX *model.Evidence
+	for index := range evidence {
+		if evidence[index].RecordType == "MX" {
+			nullMX = &evidence[index]
+		}
+	}
+	if nullMX == nil || nullMX.Value != "." || nullMX.Priority == nil || *nullMX.Priority != 0 {
+		t.Fatalf("Null MX evidence = %#v, want value . and priority 0", nullMX)
+	}
+	for _, outcome := range outcomes {
+		if outcome.RecordType == "MX" && outcome.Code == "no_result" {
+			t.Fatalf("Null MX was converted to no_result: %#v", outcome)
+		}
+	}
+	if len(policy.Allowed) != 1 || policy.Allowed[0] != target {
+		t.Fatalf("Null MX expanded scope: %#v", policy.Allowed)
+	}
+}
+
 func TestCollectChecksAuthorizationBeforeNewLookups(t *testing.T) {
 	tests := []struct {
 		name      string

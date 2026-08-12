@@ -67,10 +67,21 @@ func RunText(output io.Writer, run model.Run) error {
 		}
 	}
 
+	outcomes, failures := splitOutcomes(orderedFailures(run.Errors))
+	if len(outcomes) != 0 {
+		if _, err := fmt.Fprintln(output, "\nDNS absence"); err != nil {
+			return err
+		}
+		for _, outcome := range outcomes {
+			if _, err := fmt.Fprintf(output, "  %s  %-5s  no records\n", outcome.Target.Value, outcome.RecordType); err != nil {
+				return err
+			}
+		}
+	}
+
 	if _, err := fmt.Fprintln(output, "\nCollection failures"); err != nil {
 		return err
 	}
-	failures := orderedFailures(run.Errors)
 	if len(failures) == 0 {
 		_, err := fmt.Fprintln(output, "  none")
 		return err
@@ -84,6 +95,19 @@ func RunText(output io.Writer, run model.Run) error {
 		}
 	}
 	return nil
+}
+
+func splitOutcomes(results []model.RunError) ([]model.RunError, []model.RunError) {
+	outcomes := make([]model.RunError, 0)
+	failures := make([]model.RunError, 0)
+	for _, result := range results {
+		if result.Code == "no_result" {
+			outcomes = append(outcomes, result)
+			continue
+		}
+		failures = append(failures, result)
+	}
+	return outcomes, failures
 }
 
 // RunJSON writes the versioned machine-readable reconnaissance result.

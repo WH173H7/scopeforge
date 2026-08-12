@@ -155,7 +155,7 @@ func normalizedMX(target model.Target, records []*net.MX) []model.Evidence {
 		if record == nil {
 			continue
 		}
-		host := normalizedDNSName(record.Host)
+		host := normalizedMXHost(record.Host)
 		if host != "" {
 			unique[mxKey{preference: record.Pref, host: host}] = struct{}{}
 		}
@@ -178,6 +178,13 @@ func normalizedMX(target model.Target, records []*net.MX) []model.Evidence {
 		})
 	}
 	return evidence
+}
+
+func normalizedMXHost(host string) string {
+	if host == "." {
+		return "."
+	}
+	return normalizedDNSName(host)
 }
 
 func normalizedNS(target model.Target, records []*net.NS) []model.Evidence {

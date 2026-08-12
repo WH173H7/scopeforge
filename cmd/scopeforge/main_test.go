@@ -192,7 +192,7 @@ func TestRunDNSCollectsAuthorizedTargets(t *testing.T) {
 	if exitCode != exitSuccess {
 		t.Fatalf("exit code = %d, want %d; stderr = %q", exitCode, exitSuccess, stderr)
 	}
-	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.example.net\n  example.com  MX     10  mail.example.net\n  example.com  NS     ns.example.net\n  example.org  A      198.51.100.10\n  example.org  AAAA   2001:db8::2\n  example.org  MX     20  mail.example.org\n  example.org  NS     ns.example.org\n\nCollection failures\n  example.org  CNAME  no_result: DNS lookup returned no records\n"
+	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.example.net\n  example.com  MX     10  mail.example.net\n  example.com  NS     ns.example.net\n  example.org  A      198.51.100.10\n  example.org  AAAA   2001:db8::2\n  example.org  MX     20  mail.example.org\n  example.org  NS     ns.example.org\n\nDNS absence\n  example.org  CNAME  no records\n\nCollection failures\n  none\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}

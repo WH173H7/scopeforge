@@ -147,6 +147,12 @@ expected DNS outcomes are represented in a successfully rendered run result,
 they return exit code 0. Exit code 1 remains reserved for unexpected internal
 failures.
 
+Human output separates `no_result` entries under `DNS absence` from actual
+`Collection failures`. Run schema version 1 continues to carry both through its
+existing `errors` array to avoid a breaking review-time schema change; consumers
+must use the stable `code` field to distinguish informational absence. A future
+schema version may name these outcomes separately.
+
 ## Logging
 
 Successful result output belongs on stdout; operational logs and text-mode
