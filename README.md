@@ -2,8 +2,8 @@
 
 ScopeForge is an early-stage, scope-aware reconnaissance and attack-surface
 mapping CLI for authorised security assessments. It currently validates and
-displays explicit exact-match scope policies and collects DNS A and AAAA
-evidence for explicitly authorised DNS names.
+displays explicit exact-match scope policies and collects DNS A, AAAA, MX, NS,
+and canonical-name evidence for explicitly authorised DNS names.
 
 ScopeForge is intended to grow toward passive DNS, certificate, RDAP, and HTTP
 metadata collection; persistent runs; run comparison; JSON output; and
@@ -44,11 +44,16 @@ scopeforge run --target example.com --target example.org --collect dns
 scopeforge run --target example.com --collect dns --format json
 ```
 
-Each A and AAAA lookup is authorized against the declared exact-match policy
-immediately before the network operation. Returned IPv4 and IPv6 addresses are
-evidence, not new targets: they do not expand authorization and are not queried
-recursively. Expected DNS failures are included in the result instead of being
-hidden or printed as successful evidence.
+Each lookup is authorized against the declared exact-match policy immediately
+before the network operation. Returned addresses and MX, NS, or canonical
+hostnames are evidence, not new targets: they do not expand authorization and
+are not queried recursively. MX evidence retains its preference value.
+
+Canonical-name evidence uses Go's standard resolver. ScopeForge records a
+distinct normalized canonical name when one is returned, but does not parse raw
+DNS packets or expose a complete CNAME chain. Expected DNS failures and absent
+record families are included in the result instead of being hidden or printed
+as successful evidence.
 
 ## Development
 

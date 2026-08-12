@@ -41,10 +41,11 @@ type Observation struct {
 
 // Evidence preserves a normalized fact returned directly by a source.
 type Evidence struct {
-	Target     Target `json:"target"`
-	Category   string `json:"category"`
-	RecordType string `json:"record_type"`
-	Value      string `json:"value"`
+	Target     Target  `json:"target"`
+	Category   string  `json:"category"`
+	RecordType string  `json:"record_type"`
+	Value      string  `json:"value"`
+	Priority   *uint16 `json:"priority,omitempty"`
 }
 
 // RunError records an operational failure that did not prevent run creation.

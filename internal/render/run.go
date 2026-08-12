@@ -25,6 +25,7 @@ type runEvidence struct {
 	Category   string       `json:"category"`
 	RecordType string       `json:"record_type"`
 	Value      string       `json:"value"`
+	Priority   *uint16      `json:"priority,omitempty"`
 }
 
 type collectionError struct {
@@ -54,7 +55,25 @@ func RunText(output io.Writer, run model.Run) error {
 		}
 	} else {
 		for _, item := range evidence {
-			if _, err := fmt.Fprintf(output, "  %s  %-4s  %s\n", item.Target.Value, item.RecordType, item.Value); err != nil {
+			if item.Priority != nil {
+				if _, err := fmt.Fprintf(output, "  %s  %-5s  %d  %s\n", item.Target.Value, item.RecordType, *item.Priority, item.Value); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(output, "  %s  %-5s  %s\n", item.Target.Value, item.RecordType, item.Value); err != nil {
+				return err
+			}
+		}
+	}
+
+	outcomes, failures := splitOutcomes(orderedFailures(run.Errors))
+	if len(outcomes) != 0 {
+		if _, err := fmt.Fprintln(output, "\nDNS absence"); err != nil {
+			return err
+		}
+		for _, outcome := range outcomes {
+			if _, err := fmt.Fprintf(output, "  %s  %-5s  no records\n", outcome.Target.Value, outcome.RecordType); err != nil {
 				return err
 			}
 		}
@@ -63,7 +82,6 @@ func RunText(output io.Writer, run model.Run) error {
 	if _, err := fmt.Fprintln(output, "\nCollection failures"); err != nil {
 		return err
 	}
-	failures := orderedFailures(run.Errors)
 	if len(failures) == 0 {
 		_, err := fmt.Fprintln(output, "  none")
 		return err
@@ -77,6 +95,19 @@ func RunText(output io.Writer, run model.Run) error {
 		}
 	}
 	return nil
+}
+
+func splitOutcomes(results []model.RunError) ([]model.RunError, []model.RunError) {
+	outcomes := make([]model.RunError, 0)
+	failures := make([]model.RunError, 0)
+	for _, result := range results {
+		if result.Code == "no_result" {
+			outcomes = append(outcomes, result)
+			continue
+		}
+		failures = append(failures, result)
+	}
+	return outcomes, failures
 }
 
 // RunJSON writes the versioned machine-readable reconnaissance result.
@@ -98,7 +129,7 @@ func RunJSON(output io.Writer, run model.Run) error {
 	for _, item := range evidence {
 		outputEvidence = append(outputEvidence, runEvidence{
 			Target:   outputTarget{Kind: jsonKind(item.Target.Kind), Value: item.Target.Value},
-			Category: item.Category, RecordType: item.RecordType, Value: item.Value,
+			Category: item.Category, RecordType: item.RecordType, Value: item.Value, Priority: item.Priority,
 		})
 	}
 	result := runResult{
@@ -120,6 +151,16 @@ func orderedEvidence(evidence []model.Evidence) []model.Evidence {
 		}
 		if result[i].RecordType != result[j].RecordType {
 			return result[i].RecordType < result[j].RecordType
+		}
+		leftPriority, rightPriority := uint16(0), uint16(0)
+		if result[i].Priority != nil {
+			leftPriority = *result[i].Priority
+		}
+		if result[j].Priority != nil {
+			rightPriority = *result[j].Priority
+		}
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
 		}
 		return result[i].Value < result[j].Value
 	})
