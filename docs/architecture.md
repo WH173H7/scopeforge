@@ -2,11 +2,10 @@
 
 ## Status and intent
 
-This document records the M0 foundation and M1 scope-validation command for
-ScopeForge. It describes intended
-boundaries where later implementation depends on them, but it does not claim
-those components exist. ScopeForge is designed for authorised, primarily
-passive reconnaissance. Active assessment is not part of the first milestone.
+This document records the M0 foundation, M1 scope-validation command, and M2A
+DNS A/AAAA evidence collection. ScopeForge is designed for authorised,
+primarily passive reconnaissance. Active assessment is not part of the current
+milestones.
 
 ## Goals
 
@@ -30,27 +29,29 @@ passive reconnaissance. Active assessment is not part of the first milestone.
 
 ```text
 cmd/scopeforge       executable entry point
+internal/dns         scoped DNS A/AAAA collection
 internal/model       run, target, observation, evidence, and error types
+internal/render      deterministic text and JSON output
 internal/scope       target parsing and explicit policy evaluation
 ```
 
-Packages for collection, persistence, configuration, logging, and rendering
-will be introduced only when their behavior is implemented. Keeping all domain
-packages under `internal` avoids committing to a public Go API prematurely.
+Packages for other collectors, persistence, configuration, and logging will be
+introduced only when their behavior is implemented. Keeping all domain packages
+under `internal` avoids committing to a public Go API prematurely.
 
 ## Run data model
 
-A `Run` records an ID, timestamps, status, the exact `ScopePolicy` snapshot used
-for authorization decisions, observations, and structured run errors. The ID
-generation and persistence representation are deferred until persistent runs
-exist.
+A `Run` records status, the exact `ScopePolicy` snapshot used for authorization
+decisions, evidence, observations, and structured run errors. ID and timestamp
+fields remain available for future persistent runs but are omitted from M2A
+output because this command has no concrete need for them.
 
 An `Observation` contains a stable kind, the collector that produced it, its
 subject, observation time, structured fields, and optional evidence references.
-Fields describe derived or normalized facts. `Evidence` separately records the
-source, capture time, media type, content, and optional digest of the material
-supporting those facts. Keeping these concepts distinct permits retention or
-redaction policies for raw material without corrupting derived results.
+Fields describe derived or normalized facts. M2A does not derive observations.
+`Evidence` records the original target, category, DNS record type, and normalized
+returned value. Evidence remains separate so later derived observations cannot
+be confused with data returned directly by a source.
 
 `RunError` captures a stable code, human-readable message, collector and target
 when relevant, occurrence time, and whether retrying may succeed. Errors are
@@ -76,15 +77,27 @@ Future relationship discovery must record a candidate asset before collection.
 Every network interaction must independently evaluate the actual destination
 against policy. DNS resolution and HTTP redirects must not widen scope.
 
-## Collection boundary
+## DNS collection and network boundary
 
-Collectors will accept a `context.Context`, a validated target, and narrowly
-scoped dependencies needed for their protocol. They will return observations,
-evidence, and operational errors in domain terms. They will not print, format
-reports, write persistent state, or choose additional targets. A coordinator
-can later aggregate results and pass complete run data to text or JSON
-renderers. No collector interface is added in M0 because no collector exists
-yet; its exact shape should be driven by the first two real collectors.
+The DNS collector accepts a `context.Context`, the effective `ScopePolicy`, one
+normalized target, a resolver, and an explicit timeout. It supports DNS-name
+targets only. It re-evaluates exact authorization immediately before each A and
+AAAA lookup, performs the two lookups sequentially, and has no retries,
+recursion, discovery, or concurrency.
+
+The small `dns.Resolver` interface contains only the context-aware `LookupIP`
+method implemented by `net.Resolver`. It exists so tests can prove
+authorization-before-network behavior, cancellation, timeouts, evidence
+normalization, and failures without using public DNS. It is DNS-specific and is
+not a generic collector or dependency-injection framework. The CLI uses an
+explicit resolver with `PreferGo` and a context-aware `net.Dialer` timeout so
+deadlines govern both lookup and DNS-server connection behavior rather than
+depending on platform resolver cancellation behavior.
+
+Collection returns model evidence and run errors; it never prints or renders.
+The command aggregates those results, while text and JSON renderers handle
+presentation. Addresses returned by DNS remain evidence. They are never added
+to `ScopePolicy`, queried, or treated as authorization for related assets.
 
 ## Errors
 
@@ -108,6 +121,15 @@ selected, an expected error has this shape:
 ```json
 {"error":{"code":"invalid_target","message":"target is invalid"}}
 ```
+
+The `run` command additionally uses `unsupported_collector` and
+`unsupported_target` before collection begins. Expected per-record collection
+failures are structured run data with the small code set `no_result`,
+`lookup_failed`, `timeout`, and `canceled`. They do not expose resolver error
+strings. A run with both evidence and failures is `partial`; one with failures
+and no evidence is `failed`; cancellation is `canceled`. Because expected DNS
+failures are represented in a successfully rendered run result, they return
+exit code 0. Exit code 1 remains reserved for unexpected internal failures.
 
 ## Logging
 
@@ -142,6 +164,8 @@ scopeforge help
 scopeforge version
 scopeforge validate-scope --target TARGET [--target TARGET...] \
   [--exclude TARGET...] [--format text|json]
+scopeforge run --target TARGET [--target TARGET...] --collect dns \
+  [--format text|json]
 ```
 
 M1 implements `validate-scope` using the standard library `flag` package.
@@ -172,9 +196,11 @@ ordering and this version 1 contract:
 }
 ```
 
-Incompatible structured-output changes require a schema-version change.
-Partial future collector failures still need documented exit behavior before
-the `run` command is implemented.
+The `run` command has its own version 1 JSON result containing `status`,
+`targets`, `collectors`, `evidence`, and `errors`. Its targets and evidence are
+sorted deterministically, and empty evidence/error collections are encoded as
+arrays rather than `null`. Incompatible structured-output changes require a
+schema-version change.
 
 ## Testing strategy
 
@@ -185,6 +211,8 @@ the `run` command is implemented.
 - Add contract tests when JSON schemas and collector boundaries exist.
 - Add integration tests around real protocol clients using local test servers,
   deterministic clocks, and controlled resolvers.
+- Test DNS through a controllable resolver; automated tests never require the
+  system resolver or Internet connectivity.
 - Run race detection on code that introduces concurrency.
 - Prefer observable behavior and boundary conditions over internal call counts.
 
@@ -217,5 +245,7 @@ M0 authorization semantics reviewable. A richer policy syntax should be added
 only with explicit boundary rules and tests. Flexible observation fields avoid
 prematurely modeling every future protocol; stable observation kinds and a
 future versioned JSON schema will constrain interoperability before persistence.
-No collector abstraction exists yet because designing one without real
-collectors would be speculative.
+No generic collector abstraction exists because one DNS implementation is not
+enough evidence for a common collector lifecycle. The narrow resolver boundary
+is sufficient for deterministic network tests without dictating future
+collectors.

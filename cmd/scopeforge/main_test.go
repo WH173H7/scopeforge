@@ -2,10 +2,24 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 )
+
+type commandResolver struct {
+	responses map[string][]net.IP
+	errors    map[string]error
+	calls     []string
+}
+
+func (resolver *commandResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, error) {
+	resolver.calls = append(resolver.calls, network+":"+host)
+	return resolver.responses[network+":"+host], resolver.errors[network+":"+host]
+}
 
 func TestRunHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -136,9 +150,118 @@ func TestValidateScopeDoesNotAuthorizeSubdomains(t *testing.T) {
 	}
 }
 
+func TestRunDNSCollectsAuthorizedTargets(t *testing.T) {
+	resolver := &commandResolver{responses: map[string][]net.IP{
+		"ip4:example.com": {net.ParseIP("192.0.2.20"), net.ParseIP("192.0.2.10")},
+		"ip6:example.com": {net.ParseIP("2001:db8::1")},
+		"ip4:example.org": {net.ParseIP("198.51.100.10")},
+		"ip6:example.org": {net.ParseIP("2001:db8::2")},
+	}}
+	exitCode, stdout, stderr := runReconCommand(
+		context.Background(), resolver,
+		"run", "--target", "example.org", "--target", "example.com", "--collect", "dns",
+	)
+	if exitCode != exitSuccess {
+		t.Fatalf("exit code = %d, want %d; stderr = %q", exitCode, exitSuccess, stderr)
+	}
+	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A     192.0.2.10\n  example.com  A     192.0.2.20\n  example.com  AAAA  2001:db8::1\n  example.org  A     198.51.100.10\n  example.org  AAAA  2001:db8::2\n\nCollection failures\n  none\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if len(resolver.calls) != 4 {
+		t.Fatalf("resolver calls = %v, want four", resolver.calls)
+	}
+}
+
+func TestRunDNSJSONOutputDoesNotExpandScope(t *testing.T) {
+	resolver := &commandResolver{responses: map[string][]net.IP{
+		"ip4:example.com": {net.ParseIP("192.0.2.10")},
+		"ip6:example.com": {net.ParseIP("2001:db8::1")},
+	}}
+	exitCode, stdout, stderr := runReconCommand(
+		context.Background(), resolver,
+		"run", "--target", "example.com", "--collect", "dns", "--format", "json",
+	)
+	if exitCode != exitSuccess || stderr != "" {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr)
+	}
+	var result struct {
+		SchemaVersion string `json:"schema_version"`
+		Targets       []struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+		} `json:"targets"`
+		Evidence []struct {
+			Value string `json:"value"`
+		} `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is invalid JSON: %v", err)
+	}
+	if result.SchemaVersion != "1" || len(result.Targets) != 1 || result.Targets[0].Value != "example.com" {
+		t.Fatalf("scope in JSON = %#v", result.Targets)
+	}
+	if len(result.Evidence) != 2 || result.Evidence[0].Value != "192.0.2.10" || result.Evidence[1].Value != "2001:db8::1" {
+		t.Fatalf("evidence in JSON = %#v", result.Evidence)
+	}
+}
+
+func TestRunDNSRepresentsCollectionFailure(t *testing.T) {
+	resolver := &commandResolver{
+		responses: map[string][]net.IP{"ip6:example.com": {net.ParseIP("2001:db8::1")}},
+		errors:    map[string]error{"ip4:example.com": errors.New("resolver unavailable")},
+	}
+	exitCode, stdout, stderr := runReconCommand(
+		context.Background(), resolver,
+		"run", "--target", "example.com", "--collect", "dns", "--format", "json",
+	)
+	if exitCode != exitSuccess || stderr != "" {
+		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, `"status":"partial"`) || !strings.Contains(stdout, `"code":"lookup_failed"`) {
+		t.Fatalf("stdout = %q, want structured partial failure", stdout)
+	}
+}
+
+func TestRunRejectsInvalidInputBeforeNetwork(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode string
+		wantExit int
+	}{
+		{name: "missing target", args: []string{"run", "--collect", "dns"}, wantCode: "missing_target", wantExit: exitValidation},
+		{name: "unsupported collector", args: []string{"run", "--target", "example.com", "--collect", "http"}, wantCode: "unsupported_collector", wantExit: exitUsage},
+		{name: "missing collector", args: []string{"run", "--target", "example.com"}, wantCode: "unsupported_collector", wantExit: exitUsage},
+		{name: "IP target", args: []string{"run", "--target", "192.0.2.10", "--collect", "dns"}, wantCode: "unsupported_target", wantExit: exitValidation},
+		{name: "invalid target", args: []string{"run", "--target", "api..example.com", "--collect", "dns"}, wantCode: "invalid_target", wantExit: exitValidation},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := &commandResolver{}
+			exitCode, stdout, stderr := runReconCommand(context.Background(), resolver, test.args...)
+			if exitCode != test.wantExit || stdout != "" || !strings.Contains(stderr, test.wantCode) {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+			}
+			if len(resolver.calls) != 0 {
+				t.Fatalf("resolver calls = %v, want none", resolver.calls)
+			}
+		})
+	}
+}
+
 func runCommand(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	exitCode := run(args, &stdout, &stderr)
+	return exitCode, stdout.String(), stderr.String()
+}
+
+func runReconCommand(ctx context.Context, resolver *commandResolver, args ...string) (int, string, string) {
+	var stdout, stderr bytes.Buffer
+	exitCode := runContext(ctx, args, &stdout, &stderr, resolver)
 	return exitCode, stdout.String(), stderr.String()
 }
 

@@ -19,12 +19,13 @@ const (
 
 // Run captures the inputs and results of one reconnaissance execution.
 type Run struct {
-	ID           string        `json:"id"`
-	StartedAt    time.Time     `json:"started_at"`
+	ID           string        `json:"id,omitempty"`
+	StartedAt    time.Time     `json:"started_at,omitempty"`
 	FinishedAt   *time.Time    `json:"finished_at,omitempty"`
 	Status       RunStatus     `json:"status"`
 	Scope        ScopePolicy   `json:"scope"`
 	Observations []Observation `json:"observations"`
+	Evidence     []Evidence    `json:"evidence"`
 	Errors       []RunError    `json:"errors,omitempty"`
 }
 
@@ -38,13 +39,12 @@ type Observation struct {
 	Evidence   []Evidence                 `json:"evidence,omitempty"`
 }
 
-// Evidence preserves source material separately from derived observations.
+// Evidence preserves a normalized fact returned directly by a source.
 type Evidence struct {
-	Source     string    `json:"source"`
-	CapturedAt time.Time `json:"captured_at"`
-	MediaType  string    `json:"media_type"`
-	Content    []byte    `json:"content,omitempty"`
-	SHA256     string    `json:"sha256,omitempty"`
+	Target     Target `json:"target"`
+	Category   string `json:"category"`
+	RecordType string `json:"record_type"`
+	Value      string `json:"value"`
 }
 
 // RunError records an operational failure that did not prevent run creation.
@@ -53,6 +53,7 @@ type RunError struct {
 	Message    string    `json:"message"`
 	Collector  string    `json:"collector,omitempty"`
 	Target     *Target   `json:"target,omitempty"`
-	OccurredAt time.Time `json:"occurred_at"`
+	RecordType string    `json:"record_type,omitempty"`
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
 	Retryable  bool      `json:"retryable"`
 }
