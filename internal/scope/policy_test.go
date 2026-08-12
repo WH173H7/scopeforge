@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ajet/scopeforge/internal/model"
+	"github.com/WH173H7/scopeforge/internal/model"
 )
 
 func TestParseTarget(t *testing.T) {

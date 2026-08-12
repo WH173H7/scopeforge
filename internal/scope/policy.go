@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/ajet/scopeforge/internal/model"
+	"github.com/WH173H7/scopeforge/internal/model"
 )
 
 var (
