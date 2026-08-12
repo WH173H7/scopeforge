@@ -26,10 +26,10 @@ not permission to assess related targets. Redirects, resolved addresses,
 subdomains, and discovered assets must each pass the applicable scope policy
 before any future collector interacts with them.
 
-The DNS collector rechecks authorization before every A and AAAA lookup.
-Addresses returned by those lookups are evidence only: ScopeForge does not add
-them to the authorized policy, query them, or recursively discover related
-names.
+The DNS collector rechecks authorization before every A, AAAA, MX, NS, and
+canonical-name lookup. Addresses and hostnames returned by those lookups are
+evidence only: ScopeForge does not add them to the authorized policy, query
+them, follow CNAME chains, or recursively discover related names.
 
 Reports may contain sensitive infrastructure information. Store them with
 appropriate access controls, retention limits, and encryption. Never include

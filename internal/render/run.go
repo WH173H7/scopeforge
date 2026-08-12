@@ -25,6 +25,7 @@ type runEvidence struct {
 	Category   string       `json:"category"`
 	RecordType string       `json:"record_type"`
 	Value      string       `json:"value"`
+	Priority   *uint16      `json:"priority,omitempty"`
 }
 
 type collectionError struct {
@@ -54,7 +55,13 @@ func RunText(output io.Writer, run model.Run) error {
 		}
 	} else {
 		for _, item := range evidence {
-			if _, err := fmt.Fprintf(output, "  %s  %-4s  %s\n", item.Target.Value, item.RecordType, item.Value); err != nil {
+			if item.Priority != nil {
+				if _, err := fmt.Fprintf(output, "  %s  %-5s  %d  %s\n", item.Target.Value, item.RecordType, *item.Priority, item.Value); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(output, "  %s  %-5s  %s\n", item.Target.Value, item.RecordType, item.Value); err != nil {
 				return err
 			}
 		}
@@ -98,7 +105,7 @@ func RunJSON(output io.Writer, run model.Run) error {
 	for _, item := range evidence {
 		outputEvidence = append(outputEvidence, runEvidence{
 			Target:   outputTarget{Kind: jsonKind(item.Target.Kind), Value: item.Target.Value},
-			Category: item.Category, RecordType: item.RecordType, Value: item.Value,
+			Category: item.Category, RecordType: item.RecordType, Value: item.Value, Priority: item.Priority,
 		})
 	}
 	result := runResult{
@@ -120,6 +127,16 @@ func orderedEvidence(evidence []model.Evidence) []model.Evidence {
 		}
 		if result[i].RecordType != result[j].RecordType {
 			return result[i].RecordType < result[j].RecordType
+		}
+		leftPriority, rightPriority := uint16(0), uint16(0)
+		if result[i].Priority != nil {
+			leftPriority = *result[i].Priority
+		}
+		if result[j].Priority != nil {
+			rightPriority = *result[j].Priority
+		}
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
 		}
 		return result[i].Value < result[j].Value
 	})

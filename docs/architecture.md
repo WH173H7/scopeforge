@@ -2,8 +2,8 @@
 
 ## Status and intent
 
-This document records the M0 foundation, M1 scope-validation command, and M2A
-DNS A/AAAA evidence collection. ScopeForge is designed for authorised,
+This document records the M0 foundation, M1 scope-validation command, and M2
+DNS evidence collection. ScopeForge is designed for authorised,
 primarily passive reconnaissance. Active assessment is not part of the current
 milestones.
 
@@ -29,7 +29,7 @@ milestones.
 
 ```text
 cmd/scopeforge       executable entry point
-internal/dns         scoped DNS A/AAAA collection
+internal/dns         scoped DNS evidence collection
 internal/model       run, target, observation, evidence, and error types
 internal/render      deterministic text and JSON output
 internal/scope       target parsing and explicit policy evaluation
@@ -49,9 +49,12 @@ output because this command has no concrete need for them.
 An `Observation` contains a stable kind, the collector that produced it, its
 subject, observation time, structured fields, and optional evidence references.
 Fields describe derived or normalized facts. M2A does not derive observations.
-`Evidence` records the original target, category, DNS record type, and normalized
-returned value. Evidence remains separate so later derived observations cannot
-be confused with data returned directly by a source.
+`Evidence` records the original target, category, DNS record type, normalized
+returned value, and an optional typed priority used by MX evidence. Adding an
+optional `priority` field is backward-compatible within run schema version 1:
+existing record objects are unchanged, while MX objects can carry information
+that would otherwise be lost. Evidence remains separate so later derived
+observations cannot be confused with data returned directly by a source.
 
 `RunError` captures a stable code, human-readable message, collector and target
 when relevant, occurrence time, and whether retrying may succeed. Errors are
@@ -81,12 +84,13 @@ against policy. DNS resolution and HTTP redirects must not widen scope.
 
 The DNS collector accepts a `context.Context`, the effective `ScopePolicy`, one
 normalized target, a resolver, and an explicit timeout. It supports DNS-name
-targets only. It re-evaluates exact authorization immediately before each A and
-AAAA lookup, performs the two lookups sequentially, and has no retries,
-recursion, discovery, or concurrency.
+targets only. It re-evaluates exact authorization immediately before each A,
+AAAA, MX, NS, and canonical-name lookup, performs the lookups sequentially, and
+has no retries, recursion, discovery, or concurrency.
 
 The small `dns.Resolver` interface contains only the context-aware `LookupIP`
-method implemented by `net.Resolver`. It exists so tests can prove
+methods implemented by `net.Resolver`: `LookupIP`, `LookupMX`, `LookupNS`, and
+`LookupCNAME`. It exists so tests can prove
 authorization-before-network behavior, cancellation, timeouts, evidence
 normalization, and failures without using public DNS. It is DNS-specific and is
 not a generic collector or dependency-injection framework. The CLI uses an
@@ -96,8 +100,16 @@ depending on platform resolver cancellation behavior.
 
 Collection returns model evidence and run errors; it never prints or renders.
 The command aggregates those results, while text and JSON renderers handle
-presentation. Addresses returned by DNS remain evidence. They are never added
-to `ScopePolicy`, queried, or treated as authorization for related assets.
+presentation. Addresses and hostnames returned by DNS remain evidence. They are
+never added to `ScopePolicy`, queried, or treated as authorization for related
+assets. Returned DNS names are lowercased, stripped of one trailing root dot,
+deduplicated, and sorted; normalization does not imply authorization.
+
+Go's `LookupCNAME` exposes a canonical name, not the underlying raw CNAME chain.
+M2 records evidence only when that normalized name differs from the requested
+target. It does not manufacture a self-referential CNAME, parse DNS packets, or
+follow the returned name. MX evidence is sorted by preference then hostname;
+NS and other evidence use normalized values for deterministic ordering.
 
 ## Errors
 
@@ -124,12 +136,16 @@ selected, an expected error has this shape:
 
 The `run` command additionally uses `unsupported_collector` and
 `unsupported_target` before collection begins. Expected per-record collection
-failures are structured run data with the small code set `no_result`,
+outcomes are structured run data with the small code set `no_result`,
 `lookup_failed`, `timeout`, and `canceled`. They do not expose resolver error
-strings. A run with both evidence and failures is `partial`; one with failures
-and no evidence is `failed`; cancellation is `canceled`. Because expected DNS
-failures are represented in a successfully rendered run result, they return
-exit code 0. Exit code 1 remains reserved for unexpected internal failures.
+strings. `no_result` represents informational evidence absence, including a
+resolver not-found response, and does not degrade run status. This matters
+because MX, NS, and distinct CNAME data are legitimately absent for many names.
+A run with both evidence and actual failures is `partial`; one with actual
+failures and no evidence is `failed`; cancellation is `canceled`. Because
+expected DNS outcomes are represented in a successfully rendered run result,
+they return exit code 0. Exit code 1 remains reserved for unexpected internal
+failures.
 
 ## Logging
 

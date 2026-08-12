@@ -8,17 +8,37 @@ import (
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/WH173H7/scopeforge/internal/model"
 )
 
 type commandResolver struct {
 	responses map[string][]net.IP
 	errors    map[string]error
+	mx        map[string][]*net.MX
+	ns        map[string][]*net.NS
+	cname     map[string]string
 	calls     []string
 }
 
 func (resolver *commandResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, error) {
 	resolver.calls = append(resolver.calls, network+":"+host)
 	return resolver.responses[network+":"+host], resolver.errors[network+":"+host]
+}
+
+func (resolver *commandResolver) LookupMX(_ context.Context, host string) ([]*net.MX, error) {
+	resolver.calls = append(resolver.calls, "mx:"+host)
+	return resolver.mx[host], resolver.errors["mx:"+host]
+}
+
+func (resolver *commandResolver) LookupNS(_ context.Context, host string) ([]*net.NS, error) {
+	resolver.calls = append(resolver.calls, "ns:"+host)
+	return resolver.ns[host], resolver.errors["ns:"+host]
+}
+
+func (resolver *commandResolver) LookupCNAME(_ context.Context, host string) (string, error) {
+	resolver.calls = append(resolver.calls, "cname:"+host)
+	return resolver.cname[host], resolver.errors["cname:"+host]
 }
 
 func TestRunHelp(t *testing.T) {
@@ -156,6 +176,14 @@ func TestRunDNSCollectsAuthorizedTargets(t *testing.T) {
 		"ip6:example.com": {net.ParseIP("2001:db8::1")},
 		"ip4:example.org": {net.ParseIP("198.51.100.10")},
 		"ip6:example.org": {net.ParseIP("2001:db8::2")},
+	}, mx: map[string][]*net.MX{
+		"example.com": {{Host: "mail.example.net.", Pref: 10}},
+		"example.org": {{Host: "mail.example.org.", Pref: 20}},
+	}, ns: map[string][]*net.NS{
+		"example.com": {{Host: "ns.example.net."}},
+		"example.org": {{Host: "ns.example.org."}},
+	}, cname: map[string]string{
+		"example.com": "edge.example.net.", "example.org": "example.org.",
 	}}
 	exitCode, stdout, stderr := runReconCommand(
 		context.Background(), resolver,
@@ -164,15 +192,15 @@ func TestRunDNSCollectsAuthorizedTargets(t *testing.T) {
 	if exitCode != exitSuccess {
 		t.Fatalf("exit code = %d, want %d; stderr = %q", exitCode, exitSuccess, stderr)
 	}
-	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A     192.0.2.10\n  example.com  A     192.0.2.20\n  example.com  AAAA  2001:db8::1\n  example.org  A     198.51.100.10\n  example.org  AAAA  2001:db8::2\n\nCollection failures\n  none\n"
+	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.example.net\n  example.com  MX     10  mail.example.net\n  example.com  NS     ns.example.net\n  example.org  A      198.51.100.10\n  example.org  AAAA   2001:db8::2\n  example.org  MX     20  mail.example.org\n  example.org  NS     ns.example.org\n\nCollection failures\n  example.org  CNAME  no_result: DNS lookup returned no records\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if len(resolver.calls) != 4 {
-		t.Fatalf("resolver calls = %v, want four", resolver.calls)
+	if len(resolver.calls) != 10 {
+		t.Fatalf("resolver calls = %v, want ten", resolver.calls)
 	}
 }
 
@@ -223,6 +251,17 @@ func TestRunDNSRepresentsCollectionFailure(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"status":"partial"`) || !strings.Contains(stdout, `"code":"lookup_failed"`) {
 		t.Fatalf("stdout = %q, want structured partial failure", stdout)
+	}
+}
+
+func TestNoResultDoesNotDegradeRunStatus(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	run := model.Run{
+		Evidence: []model.Evidence{{Target: target, Category: "dns_record", RecordType: "A", Value: "192.0.2.10"}},
+		Errors:   []model.RunError{{Code: "no_result", Target: &target, RecordType: "MX"}},
+	}
+	if got := runStatus(run); got != model.RunCompleted {
+		t.Fatalf("runStatus() = %q, want completed", got)
 	}
 }
 

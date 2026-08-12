@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/WH173H7/scopeforge/internal/model"
@@ -14,12 +15,15 @@ import (
 
 var ErrUnauthorized = errors.New("DNS target is not authorized")
 
-// Resolver is the narrow part of net.Resolver used for A and AAAA lookups.
+// Resolver is the narrow part of net.Resolver used for supported DNS lookups.
 type Resolver interface {
 	LookupIP(context.Context, string, string) ([]net.IP, error)
+	LookupMX(context.Context, string) ([]*net.MX, error)
+	LookupNS(context.Context, string) ([]*net.NS, error)
+	LookupCNAME(context.Context, string) (string, error)
 }
 
-// Collect obtains A and AAAA evidence for one explicitly authorized DNS target.
+// Collect obtains supported DNS evidence for one explicitly authorized DNS target.
 func Collect(
 	ctx context.Context,
 	resolver Resolver,
@@ -73,7 +77,143 @@ func Collect(
 		}
 	}
 
+	if !scope.Allows(policy, target) {
+		return evidence, failures, ErrUnauthorized
+	}
+	mxCtx, cancel := context.WithTimeout(ctx, timeout)
+	mxRecords, err := resolver.LookupMX(mxCtx, target.Value)
+	mxContextError := mxCtx.Err()
+	cancel()
+	if err != nil {
+		failures = append(failures, lookupFailure(target, "MX", err, mxContextError))
+		if ctx.Err() != nil {
+			return evidence, failures, nil
+		}
+	} else {
+		mxEvidence := normalizedMX(target, mxRecords)
+		if len(mxEvidence) == 0 {
+			failures = append(failures, noResult(target, "MX"))
+		} else {
+			evidence = append(evidence, mxEvidence...)
+		}
+	}
+
+	if !scope.Allows(policy, target) {
+		return evidence, failures, ErrUnauthorized
+	}
+	nsCtx, cancel := context.WithTimeout(ctx, timeout)
+	nsRecords, err := resolver.LookupNS(nsCtx, target.Value)
+	nsContextError := nsCtx.Err()
+	cancel()
+	if err != nil {
+		failures = append(failures, lookupFailure(target, "NS", err, nsContextError))
+		if ctx.Err() != nil {
+			return evidence, failures, nil
+		}
+	} else {
+		nsEvidence := normalizedNS(target, nsRecords)
+		if len(nsEvidence) == 0 {
+			failures = append(failures, noResult(target, "NS"))
+		} else {
+			evidence = append(evidence, nsEvidence...)
+		}
+	}
+
+	if !scope.Allows(policy, target) {
+		return evidence, failures, ErrUnauthorized
+	}
+	cnameCtx, cancel := context.WithTimeout(ctx, timeout)
+	canonicalName, err := resolver.LookupCNAME(cnameCtx, target.Value)
+	cnameContextError := cnameCtx.Err()
+	cancel()
+	if err != nil {
+		failures = append(failures, lookupFailure(target, "CNAME", err, cnameContextError))
+		if ctx.Err() != nil {
+			return evidence, failures, nil
+		}
+	} else {
+		canonicalName = normalizedDNSName(canonicalName)
+		if canonicalName == "" || canonicalName == target.Value {
+			failures = append(failures, noResult(target, "CNAME"))
+		} else {
+			evidence = append(evidence, model.Evidence{
+				Target: target, Category: "dns_record", RecordType: "CNAME", Value: canonicalName,
+			})
+		}
+	}
+
 	return evidence, failures, nil
+}
+
+func normalizedMX(target model.Target, records []*net.MX) []model.Evidence {
+	type mxKey struct {
+		preference uint16
+		host       string
+	}
+	unique := make(map[mxKey]struct{}, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		host := normalizedDNSName(record.Host)
+		if host != "" {
+			unique[mxKey{preference: record.Pref, host: host}] = struct{}{}
+		}
+	}
+	keys := make([]mxKey, 0, len(unique))
+	for key := range unique {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].preference != keys[j].preference {
+			return keys[i].preference < keys[j].preference
+		}
+		return keys[i].host < keys[j].host
+	})
+	evidence := make([]model.Evidence, 0, len(keys))
+	for _, key := range keys {
+		preference := key.preference
+		evidence = append(evidence, model.Evidence{
+			Target: target, Category: "dns_record", RecordType: "MX", Value: key.host, Priority: &preference,
+		})
+	}
+	return evidence
+}
+
+func normalizedNS(target model.Target, records []*net.NS) []model.Evidence {
+	unique := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		host := normalizedDNSName(record.Host)
+		if host != "" {
+			unique[host] = struct{}{}
+		}
+	}
+	hosts := make([]string, 0, len(unique))
+	for host := range unique {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	evidence := make([]model.Evidence, 0, len(hosts))
+	for _, host := range hosts {
+		evidence = append(evidence, model.Evidence{
+			Target: target, Category: "dns_record", RecordType: "NS", Value: host,
+		})
+	}
+	return evidence
+}
+
+func normalizedDNSName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
+}
+
+func noResult(target model.Target, recordType string) model.RunError {
+	return model.RunError{
+		Code: "no_result", Message: "DNS lookup returned no records", Collector: "dns",
+		Target: targetPointer(target), RecordType: recordType,
+	}
 }
 
 func normalizedAddresses(addresses []net.IP, recordType string) []string {
@@ -102,7 +242,10 @@ func lookupFailure(target model.Target, recordType string, err, contextError err
 	code := "lookup_failed"
 	message := "DNS lookup failed"
 	retryable := true
-	if errors.Is(contextError, context.Canceled) || errors.Is(err, context.Canceled) {
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) && dnsError.IsNotFound {
+		return noResult(target, recordType)
+	} else if errors.Is(contextError, context.Canceled) || errors.Is(err, context.Canceled) {
 		code = "canceled"
 		message = "DNS lookup canceled"
 		retryable = false

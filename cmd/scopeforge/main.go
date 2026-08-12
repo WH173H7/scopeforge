@@ -154,12 +154,16 @@ func runReconnaissance(
 }
 
 func runStatus(run model.Run) model.RunStatus {
+	actualFailures := 0
 	for _, failure := range run.Errors {
 		if failure.Code == "canceled" {
 			return model.RunCanceled
 		}
+		if failure.Code != "no_result" {
+			actualFailures++
+		}
 	}
-	if len(run.Errors) == 0 {
+	if actualFailures == 0 {
 		return model.RunCompleted
 	}
 	if len(run.Evidence) == 0 {
