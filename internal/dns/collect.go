@@ -214,12 +214,11 @@ func boundedTXT(target model.Target, records []string) ([]model.Evidence, *model
 		if len(retained) < originalLength {
 			item.Truncated = true
 			item.OriginalLength = intPointer(originalLength)
-			omittedBytes += originalLength - len(retained)
 		}
 		evidence = append(evidence, item)
 	}
 
-	if omittedRecords == 0 && omittedBytes == 0 {
+	if omittedRecords == 0 {
 		return evidence, nil
 	}
 	return evidence, &model.RunError{

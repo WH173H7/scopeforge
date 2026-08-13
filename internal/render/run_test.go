@@ -14,7 +14,7 @@ func TestRunTextIsDeterministic(t *testing.T) {
 		Status: model.RunPartial,
 		Scope:  model.ScopePolicy{Allowed: []model.Target{target}},
 		Evidence: []model.Evidence{
-			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "line1\n\x1b[31mline2"},
+			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "line1\n\r\t\x1b[31mline2"},
 			{Target: target, Category: "dns_record", RecordType: "MX", Value: ".", Priority: testPriority(0)},
 			{Target: target, Category: "dns_record", RecordType: "NS", Value: "ns2.example.net"},
 			{Target: target, Category: "dns_record", RecordType: "MX", Value: "mail2.example.net", Priority: testPriority(20)},
@@ -34,7 +34,7 @@ func TestRunTextIsDeterministic(t *testing.T) {
 	if err := RunText(&output, run); err != nil {
 		t.Fatal(err)
 	}
-	want := "Run partial\n\nTargets\n  DNS  example.com\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.provider.net\n  example.com  MX     0  .\n  example.com  MX     10  mail1.example.net\n  example.com  MX     20  mail2.example.net\n  example.com  NS     ns2.example.net\n  example.com  TXT    \"line1\\n\\x1b[31mline2\"\n\nDNS absence\n  example.com  CNAME  no records\n\nEvidence limits\n  example.com  TXT    omitted 2 records and 9000 bytes\n\nCollection failures\n  example.com  AAAA  timeout: DNS lookup timed out\n"
+	want := "Run partial\n\nTargets\n  DNS  example.com\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.provider.net\n  example.com  MX     0  .\n  example.com  MX     10  mail1.example.net\n  example.com  MX     20  mail2.example.net\n  example.com  NS     ns2.example.net\n  example.com  TXT    \"line1\\n\\r\\t\\x1b[31mline2\"\n\nDNS absence\n  example.com  CNAME  no records\n\nEvidence limits\n  example.com  TXT    omitted 2 records and 9000 bytes\n\nCollection failures\n  example.com  AAAA  timeout: DNS lookup timed out\n"
 	if output.String() != want {
 		t.Fatalf("RunText() = %q, want %q", output.String(), want)
 	}

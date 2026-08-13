@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -293,8 +294,23 @@ func TestBoundedTXTTotalByteLimit(t *testing.T) {
 			retainedBytes += len(item.Value)
 		}
 	}
-	if retainedBytes > maxTXTBytesPerTarget || outcome == nil || outcome.OmittedBytes == 0 {
+	if retainedBytes > maxTXTBytesPerTarget || outcome == nil || outcome.OmittedRecords == 0 || outcome.OmittedBytes == 0 {
 		t.Fatalf("retained=%d outcome=%#v", retainedBytes, outcome)
+	}
+}
+
+func TestBoundedTXTPerValueTruncationIsTyped(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	value := strings.Repeat("B", maxTXTValueBytes+25)
+	evidence, outcome := boundedTXT(target, []string{value})
+	if outcome != nil {
+		t.Fatalf("per-value truncation emitted evidence_limited: %#v", outcome)
+	}
+	if len(evidence) != 1 || !evidence[0].Truncated || evidence[0].Encoding != "" {
+		t.Fatalf("truncated evidence = %#v", evidence)
+	}
+	if evidence[0].OriginalLength == nil || *evidence[0].OriginalLength != len(value) || len(evidence[0].Value) != maxTXTValueBytes {
+		t.Fatalf("truncated lengths = %#v", evidence[0])
 	}
 }
 
@@ -305,6 +321,45 @@ func TestBoundedTXTInvalidUTF8UsesBase64(t *testing.T) {
 	if outcome != nil || len(evidence) != 1 || evidence[0].Encoding != "base64" || evidence[0].Value != "Yf9i" {
 		t.Fatalf("invalid UTF-8 evidence = %#v, outcome = %#v", evidence, outcome)
 	}
+}
+
+func TestBoundedTXTPreservesValidUTF8(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	value := "café 日本語"
+	evidence, outcome := boundedTXT(target, []string{value})
+	if outcome != nil || len(evidence) != 1 || evidence[0].Encoding != "" || evidence[0].Value != value {
+		t.Fatalf("valid UTF-8 evidence = %#v, outcome = %#v", evidence, outcome)
+	}
+}
+
+func TestBoundedTXTTruncatedInvalidUTF8KeepsOriginalLength(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	raw := append(bytes.Repeat([]byte{'x'}, maxTXTValueBytes), 0xff, 'y')
+	evidence, outcome := boundedTXT(target, []string{string(raw)})
+	if outcome != nil || len(evidence) != 1 {
+		t.Fatalf("evidence = %#v outcome = %#v", evidence, outcome)
+	}
+	item := evidence[0]
+	if item.Encoding != "base64" || !item.Truncated || item.OriginalLength == nil || *item.OriginalLength != len(raw) {
+		t.Fatalf("truncated invalid UTF-8 = %#v", item)
+	}
+}
+
+func TestCollectTXTAbsenceIsNoResult(t *testing.T) {
+	policy, target := policyAndTarget(t, "example.com")
+	resolver := &fakeResolver{
+		responses:  map[string]resolverResponse{},
+		txtRecords: []string{},
+		txtErr:     &net.DNSError{Err: "no such host", Name: "example.com", IsNotFound: true},
+	}
+	evidence, outcomes, err := Collect(context.Background(), resolver, policy, target, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidenceByType(evidence, "TXT")) != 0 {
+		t.Fatalf("unexpected TXT evidence: %#v", evidence)
+	}
+	assertOutcome(t, outcomes, "TXT", "no_result")
 }
 
 func TestCollectTXTFailureCancellationAndAuthorization(t *testing.T) {

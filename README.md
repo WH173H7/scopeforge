@@ -58,9 +58,10 @@ as successful evidence.
 TXT is retained as untrusted evidence and is not interpreted as SPF, DMARC,
 DKIM, a vulnerability, or an instruction. Per target, ScopeForge retains at
 most 64 unique TXT values, 4,096 source bytes per value, and 65,536 source
-bytes in total. Retained truncation and omitted data are reported explicitly.
-Invalid UTF-8 is represented as base64; human output quotes TXT values so
-control characters cannot be emitted directly to a terminal.
+bytes in total. Retained truncation is reported on each evidence item; fully omitted records
+are reported with an explicit evidence_limited outcome. Invalid UTF-8 is
+represented as base64; human output quotes TXT values so control characters
+cannot be emitted directly to a terminal.
 
 ## Development
 

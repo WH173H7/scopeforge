@@ -114,11 +114,12 @@ NS and other evidence use normalized values for deterministic ordering.
 TXT values are opaque, untrusted data: collection preserves case, internal
 whitespace, and empty strings, deduplicating only exact byte-identical values.
 Sorted values are bounded to 64 retained records, 4,096 source bytes per value,
-and 65,536 source bytes per target. Per-value truncation is represented by the
-additive schema-v1 fields `truncated` and `original_length`; invalid UTF-8 is
-base64 encoded with `encoding: "base64"`. Count/total omissions produce a typed
-`evidence_limited` outcome with `omitted_records` and `omitted_bytes`. These
-limits describe ScopeForge retention, not DNS protocol constraints.
+and 65,536 source bytes per target. Per-value truncation is represented only by
+the additive schema-v1 fields `truncated` and `original_length`; invalid UTF-8
+is base64 encoded with `encoding: "base64"`. Fully omitted records from the
+count or total-byte budgets produce a typed `evidence_limited` outcome with
+`omitted_records` and `omitted_bytes`. These limits describe ScopeForge
+retention, not DNS protocol constraints.
 
 Human TXT output uses Go-style ASCII quoting, escaping newlines, terminal
 control bytes, and non-ASCII characters rather than emitting attacker-controlled
