@@ -2,8 +2,8 @@
 
 ScopeForge is an early-stage, scope-aware reconnaissance and attack-surface
 mapping CLI for authorised security assessments. It currently validates and
-displays explicit exact-match scope policies and collects DNS A, AAAA, MX, NS,
-and canonical-name evidence for explicitly authorised DNS names.
+displays explicit exact-match scope policies and collects DNS A, AAAA, CNAME,
+MX, NS, and TXT evidence for explicitly authorised DNS names.
 
 ScopeForge is intended to grow toward passive DNS, certificate, RDAP, and HTTP
 metadata collection; persistent runs; run comparison; JSON output; and
@@ -54,6 +54,13 @@ distinct normalized canonical name when one is returned, but does not parse raw
 DNS packets or expose a complete CNAME chain. Expected DNS failures and absent
 record families are included in the result instead of being hidden or printed
 as successful evidence.
+
+TXT is retained as untrusted evidence and is not interpreted as SPF, DMARC,
+DKIM, a vulnerability, or an instruction. Per target, ScopeForge retains at
+most 64 unique TXT values, 4,096 source bytes per value, and 65,536 source
+bytes in total. Retained truncation and omitted data are reported explicitly.
+Invalid UTF-8 is represented as base64; human output quotes TXT values so
+control characters cannot be emitted directly to a terminal.
 
 ## Development
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 
 	"github.com/WH173H7/scopeforge/internal/model"
 )
@@ -21,20 +22,25 @@ type runResult struct {
 }
 
 type runEvidence struct {
-	Target     outputTarget `json:"target"`
-	Category   string       `json:"category"`
-	RecordType string       `json:"record_type"`
-	Value      string       `json:"value"`
-	Priority   *uint16      `json:"priority,omitempty"`
+	Target         outputTarget `json:"target"`
+	Category       string       `json:"category"`
+	RecordType     string       `json:"record_type"`
+	Value          string       `json:"value"`
+	Priority       *uint16      `json:"priority,omitempty"`
+	Encoding       string       `json:"encoding,omitempty"`
+	Truncated      bool         `json:"truncated,omitempty"`
+	OriginalLength *int         `json:"original_length,omitempty"`
 }
 
 type collectionError struct {
-	Code       string       `json:"code"`
-	Message    string       `json:"message"`
-	Collector  string       `json:"collector"`
-	Target     outputTarget `json:"target"`
-	RecordType string       `json:"record_type"`
-	Retryable  bool         `json:"retryable"`
+	Code           string       `json:"code"`
+	Message        string       `json:"message"`
+	Collector      string       `json:"collector"`
+	Target         outputTarget `json:"target"`
+	RecordType     string       `json:"record_type"`
+	Retryable      bool         `json:"retryable"`
+	OmittedRecords int          `json:"omitted_records,omitempty"`
+	OmittedBytes   int          `json:"omitted_bytes,omitempty"`
 }
 
 // RunText writes a deterministic human-readable reconnaissance result.
@@ -61,19 +67,39 @@ func RunText(output io.Writer, run model.Run) error {
 				}
 				continue
 			}
-			if _, err := fmt.Fprintf(output, "  %s  %-5s  %s\n", item.Target.Value, item.RecordType, item.Value); err != nil {
+			value := item.Value
+			if item.RecordType == "TXT" {
+				value = strconv.QuoteToASCII(value)
+				if item.Encoding != "" {
+					value = item.Encoding + ":" + value
+				}
+				if item.Truncated && item.OriginalLength != nil {
+					value += fmt.Sprintf(" (truncated from %d bytes)", *item.OriginalLength)
+				}
+			}
+			if _, err := fmt.Fprintf(output, "  %s  %-5s  %s\n", item.Target.Value, item.RecordType, value); err != nil {
 				return err
 			}
 		}
 	}
 
-	outcomes, failures := splitOutcomes(orderedFailures(run.Errors))
+	outcomes, limits, failures := splitOutcomes(orderedFailures(run.Errors))
 	if len(outcomes) != 0 {
 		if _, err := fmt.Fprintln(output, "\nDNS absence"); err != nil {
 			return err
 		}
 		for _, outcome := range outcomes {
 			if _, err := fmt.Fprintf(output, "  %s  %-5s  no records\n", outcome.Target.Value, outcome.RecordType); err != nil {
+				return err
+			}
+		}
+	}
+	if len(limits) != 0 {
+		if _, err := fmt.Fprintln(output, "\nEvidence limits"); err != nil {
+			return err
+		}
+		for _, limit := range limits {
+			if _, err := fmt.Fprintf(output, "  %s  TXT    omitted %d records and %d bytes\n", limit.Target.Value, limit.OmittedRecords, limit.OmittedBytes); err != nil {
 				return err
 			}
 		}
@@ -97,17 +123,22 @@ func RunText(output io.Writer, run model.Run) error {
 	return nil
 }
 
-func splitOutcomes(results []model.RunError) ([]model.RunError, []model.RunError) {
+func splitOutcomes(results []model.RunError) ([]model.RunError, []model.RunError, []model.RunError) {
 	outcomes := make([]model.RunError, 0)
+	limits := make([]model.RunError, 0)
 	failures := make([]model.RunError, 0)
 	for _, result := range results {
 		if result.Code == "no_result" {
 			outcomes = append(outcomes, result)
 			continue
 		}
+		if result.Code == "evidence_limited" {
+			limits = append(limits, result)
+			continue
+		}
 		failures = append(failures, result)
 	}
-	return outcomes, failures
+	return outcomes, limits, failures
 }
 
 // RunJSON writes the versioned machine-readable reconnaissance result.
@@ -122,6 +153,7 @@ func RunJSON(output io.Writer, run model.Run) error {
 			Code: failure.Code, Message: failure.Message, Collector: failure.Collector,
 			Target:     outputTarget{Kind: jsonKind(failure.Target.Kind), Value: failure.Target.Value},
 			RecordType: failure.RecordType, Retryable: failure.Retryable,
+			OmittedRecords: failure.OmittedRecords, OmittedBytes: failure.OmittedBytes,
 		})
 	}
 	evidence := orderedEvidence(run.Evidence)
@@ -130,6 +162,7 @@ func RunJSON(output io.Writer, run model.Run) error {
 		outputEvidence = append(outputEvidence, runEvidence{
 			Target:   outputTarget{Kind: jsonKind(item.Target.Kind), Value: item.Target.Value},
 			Category: item.Category, RecordType: item.RecordType, Value: item.Value, Priority: item.Priority,
+			Encoding: item.Encoding, Truncated: item.Truncated, OriginalLength: item.OriginalLength,
 		})
 	}
 	result := runResult{

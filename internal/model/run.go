@@ -39,22 +39,27 @@ type Observation struct {
 	Evidence   []Evidence                 `json:"evidence,omitempty"`
 }
 
-// Evidence preserves a normalized fact returned directly by a source.
+// Evidence preserves structured data returned directly by a source.
 type Evidence struct {
-	Target     Target  `json:"target"`
-	Category   string  `json:"category"`
-	RecordType string  `json:"record_type"`
-	Value      string  `json:"value"`
-	Priority   *uint16 `json:"priority,omitempty"`
+	Target         Target  `json:"target"`
+	Category       string  `json:"category"`
+	RecordType     string  `json:"record_type"`
+	Value          string  `json:"value"`
+	Priority       *uint16 `json:"priority,omitempty"`
+	Encoding       string  `json:"encoding,omitempty"`
+	Truncated      bool    `json:"truncated,omitempty"`
+	OriginalLength *int    `json:"original_length,omitempty"`
 }
 
 // RunError records an operational failure that did not prevent run creation.
 type RunError struct {
-	Code       string    `json:"code"`
-	Message    string    `json:"message"`
-	Collector  string    `json:"collector,omitempty"`
-	Target     *Target   `json:"target,omitempty"`
-	RecordType string    `json:"record_type,omitempty"`
-	OccurredAt time.Time `json:"occurred_at,omitempty"`
-	Retryable  bool      `json:"retryable"`
+	Code           string    `json:"code"`
+	Message        string    `json:"message"`
+	Collector      string    `json:"collector,omitempty"`
+	Target         *Target   `json:"target,omitempty"`
+	RecordType     string    `json:"record_type,omitempty"`
+	OccurredAt     time.Time `json:"occurred_at,omitempty"`
+	Retryable      bool      `json:"retryable"`
+	OmittedRecords int       `json:"omitted_records,omitempty"`
+	OmittedBytes   int       `json:"omitted_bytes,omitempty"`
 }

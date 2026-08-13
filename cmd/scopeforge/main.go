@@ -159,7 +159,7 @@ func runStatus(run model.Run) model.RunStatus {
 		if failure.Code == "canceled" {
 			return model.RunCanceled
 		}
-		if failure.Code != "no_result" {
+		if failure.Code != "no_result" && failure.Code != "evidence_limited" {
 			actualFailures++
 		}
 	}
