@@ -121,11 +121,11 @@ count or total-byte budgets produce a typed `evidence_limited` outcome with
 `omitted_records` and `omitted_bytes`. These limits describe ScopeForge
 retention, not DNS protocol constraints.
 
-Human TXT output uses Go-style ASCII quoting, escaping newlines, terminal
-control bytes, and non-ASCII characters rather than emitting attacker-controlled
-control sequences. JSON preserves valid UTF-8 directly and uses the explicit
-base64 representation for invalid UTF-8. `evidence_limited` is informational
-and, like `no_result`, does not degrade run status.
+Human TXT output uses Go-style quoting: newlines, carriage returns, tabs, ESC,
+and other control bytes are escaped, while printable Unicode remains readable.
+JSON preserves valid UTF-8 directly and uses the explicit base64 representation
+for invalid UTF-8. `evidence_limited` is informational and, like `no_result`,
+does not degrade run status.
 
 ## Errors
 

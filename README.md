@@ -61,7 +61,8 @@ most 64 unique TXT values, 4,096 source bytes per value, and 65,536 source
 bytes in total. Retained truncation is reported on each evidence item; fully omitted records
 are reported with an explicit evidence_limited outcome. Invalid UTF-8 is
 represented as base64; human output quotes TXT values so control characters
-cannot be emitted directly to a terminal.
+cannot be emitted directly to a terminal, while printable Unicode remains
+readable.
 
 ## Development
 

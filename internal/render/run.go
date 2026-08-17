@@ -69,7 +69,7 @@ func RunText(output io.Writer, run model.Run) error {
 			}
 			value := item.Value
 			if item.RecordType == "TXT" {
-				value = strconv.QuoteToASCII(value)
+				value = strconv.Quote(value)
 				if item.Encoding != "" {
 					value = item.Encoding + ":" + value
 				}

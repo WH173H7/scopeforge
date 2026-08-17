@@ -40,6 +40,32 @@ func TestRunTextIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestRunTextQuotesControlCharactersAndPreservesPrintableUnicode(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	run := model.Run{
+		Status: model.RunCompleted,
+		Scope:  model.ScopePolicy{Allowed: []model.Target{target}},
+		Evidence: []model.Evidence{
+			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "café"},
+			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "line1\n\r\t\x1b[31mline2"},
+		},
+	}
+	var output bytes.Buffer
+	if err := RunText(&output, run); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !bytes.Contains(output.Bytes(), []byte(`  example.com  TXT    "café"`)) {
+		t.Fatalf("printable Unicode was escaped or lost: %q", got)
+	}
+	if !bytes.Contains(output.Bytes(), []byte(`  example.com  TXT    "line1\n\r\t\x1b[31mline2"`)) {
+		t.Fatalf("control characters were not escaped: %q", got)
+	}
+	if bytes.Contains(output.Bytes(), []byte{0x1b}) || bytes.Contains(output.Bytes(), []byte{'\n', 'l'}) {
+		t.Fatalf("raw control bytes reached the terminal: %q", got)
+	}
+}
+
 func TestRunJSONRepresentsEvidenceLimits(t *testing.T) {
 	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
 	run := model.Run{
@@ -95,6 +121,27 @@ func TestRunJSONIsDeterministicAndVersioned(t *testing.T) {
 	want := "{\"schema_version\":\"1\",\"status\":\"completed\",\"targets\":[{\"kind\":\"dns\",\"value\":\"example.com\"}],\"collectors\":[\"dns\"],\"evidence\":[{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"A\",\"value\":\"192.0.2.10\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"AAAA\",\"value\":\"2001:db8::1\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"CNAME\",\"value\":\"edge.provider.net\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"MX\",\"value\":\".\",\"priority\":0},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"MX\",\"value\":\"mail.example.net\",\"priority\":10},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"TXT\",\"value\":\"YWJj\",\"encoding\":\"base64\",\"truncated\":true,\"original_length\":5000}],\"errors\":[]}\n"
 	if output.String() != want {
 		t.Fatalf("RunJSON() = %q, want %q", output.String(), want)
+	}
+}
+
+func TestRunJSONPreservesPrintableTXTUnicode(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	run := model.Run{
+		Status: model.RunCompleted,
+		Scope:  model.ScopePolicy{Allowed: []model.Target{target}},
+		Evidence: []model.Evidence{
+			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "café"},
+		},
+	}
+	var output bytes.Buffer
+	if err := RunJSON(&output, run); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(output.Bytes(), []byte(`"value":"café"`)) {
+		t.Fatalf("JSON escaped or altered printable TXT Unicode: %q", output.String())
+	}
+	if bytes.Contains(output.Bytes(), []byte(`\u00e9`)) {
+		t.Fatalf("JSON used ASCII escapes for printable TXT Unicode: %q", output.String())
 	}
 }
 
