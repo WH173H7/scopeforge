@@ -3,9 +3,10 @@
 ## Status and intent
 
 This document records the M0 foundation, M1 scope-validation command, M2
-DNS evidence collection, and M3A opt-in filesystem persistence of completed
-run artifacts. ScopeForge is designed for authorised, primarily passive
-reconnaissance. Active assessment is not part of the current milestones.
+DNS evidence collection, M3A opt-in filesystem persistence of completed
+run artifacts, and M3B read-only inspection of those artifacts. ScopeForge is
+designed for authorised, primarily passive reconnaissance. Active assessment
+is not part of the current milestones.
 
 ## Goals
 
@@ -208,6 +209,7 @@ scopeforge validate-scope --target TARGET [--target TARGET...] \
   [--exclude TARGET...] [--format text|json]
 scopeforge run --target TARGET [--target TARGET...] --collect dns \
   [--format text|json] [--save-dir DIR]
+scopeforge inspect-run --run-dir DIR --id RUN_ID [--format text|json]
 ```
 
 M1 implements `validate-scope` using the standard library `flag` package.
@@ -220,9 +222,10 @@ writes to injected streams so behavior is directly testable. Exit codes are:
 
 ```text
 0  success
-1  unexpected internal failure, or a requested run artifact could not be saved
+1  unexpected internal failure, a requested run artifact could not be saved,
+   or an inspect-run filesystem read failed unexpectedly
 2  CLI or usage failure
-3  scope validation failure
+3  scope validation failure, or inspect-run rejected an artifact/input
 ```
 
 `--save-dir` is optional. When it is omitted, no run artifact is written.
@@ -268,6 +271,44 @@ where practical. This is not transactional persistence. It does not guarantee
 crash-atomic replacement of a partial file, durability beyond the performed
 `Sync`, or cleanup after process or machine termination.
 
+M3A encoding and M3B decoding share one canonical JSON document type in
+`internal/artifact`. `--format json` and persisted files are that document.
+`inspect-run --format json` re-encodes it; unknown additive fields tolerated
+on read are not preserved in the re-encoded output.
+
+## Inspecting saved artifacts
+
+`inspect-run` is a read-only command. It does not take a resolver, does not
+call collectors, and does not create, chmod, rename, rewrite, or delete
+files. Loading a saved run is not authorization to contact the recorded
+assets.
+
+The artifact path is only `<run-dir>/<validated-run-id>.json`. IDs reuse the
+M3A `ValidID` grammar, so path separators, `..`, absolute paths, and a `.json`
+suffix are rejected. The command does not search recursively or accept an
+arbitrary `--file` path.
+
+`artifact.Read` Lstats the path, rejects symlinks and non-regular files, and
+refuses files larger than 16 MiB before decoding. The size bound is a
+ScopeForge safety limit, not a schema limit. After a bounded read, JSON is
+decoded without rejecting unknown fields in schema version 1, then validated.
+
+Required schema version 1 checks include: `schema_version` exactly `"1"`;
+present valid `id` matching `--id`; parseable UTC `started_at`/`finished_at`
+with finish not before start; known status; valid targets and exclusions;
+recognized collectors (`dns`); evidence category/record types and TXT
+encoding/truncation consistency; MX priority present; and outcomes with
+required fields. Missing, empty, or unknown `schema_version` is
+`unsupported_artifact_schema`. An internal `id` that does not match `--id` is
+`artifact_id_mismatch`. Other malformed content maps to `invalid_artifact`.
+
+Inspect-run exit codes: malformed flags and invalid format remain 2; missing
+or invalid `--id`/`--run-dir`, not found, unsupported schema, invalid
+artifact, ID mismatch, and oversize are 3; unexpected OS read failures are 1.
+Successful text output is an inspection view that reuses DNS evidence
+rendering, including TXT quoting. Successful JSON output is the canonical
+artifact document.
+
 Rendering is implemented separately from policy validation. The text renderer
 sorts normalized targets by kind and value. JSON uses the same deterministic
 ordering and this version 1 contract:
@@ -300,8 +341,9 @@ JSON and persisted artifacts are produced by the same encoder.
   deterministic clocks, and controlled resolvers.
 - Test DNS through a controllable resolver; automated tests never require the
   system resolver or Internet connectivity.
-- Test filesystem persistence in temporary directories with injected clocks and
-  run IDs; do not depend on a developer home directory or wall-clock sleeps.
+- Test filesystem persistence and inspection in temporary directories with
+  injected clocks and run IDs; do not depend on a developer home directory or
+  wall-clock sleeps. inspect-run tests must not invoke a DNS resolver.
 - Run race detection on code that introduces concurrency.
 - Prefer observable behavior and boundary conditions over internal call counts.
 
@@ -322,7 +364,8 @@ behavior should be tested when OS-specific code first appears.
   terms and rate limits.
 - Minimize collected personal data. Persisted run artifacts contain
   reconnaissance evidence and should be treated as sensitive; M3A does not
-  implement automatic retention, redaction, or encryption-at-rest.
+  implement automatic retention, redaction, or encryption-at-rest. M3B treats
+  those files as untrusted local input and does not collect against them.
 - Keep credentials out of CLI arguments where practical, logs, result files,
   and error strings. Treat response content as untrusted input.
 - Passive sources can still cause operational or legal impact; "passive" is

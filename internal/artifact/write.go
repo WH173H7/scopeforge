@@ -5,25 +5,14 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"runtime"
 
 	"github.com/WH173H7/scopeforge/internal/model"
-	"github.com/WH173H7/scopeforge/internal/render"
 )
 
 const (
 	dirPermission  fs.FileMode = 0o700
 	filePermission fs.FileMode = 0o600
-)
-
-var (
-	// ErrExists reports that the destination artifact already exists.
-	ErrExists = errors.New("run artifact already exists")
-	// ErrInvalidID reports that the run ID cannot be used as a filename.
-	ErrInvalidID = errors.New("run ID is invalid")
-	// ErrInvalidDir reports that the save directory cannot be used.
-	ErrInvalidDir = errors.New("save directory is invalid")
 )
 
 // Write serializes a completed run with the canonical JSON encoder into dir.
@@ -37,7 +26,7 @@ func Write(dir string, run model.Run) error {
 	if dir == "" {
 		return ErrInvalidDir
 	}
-	if !validID(run.ID) {
+	if !ValidID(run.ID) {
 		return ErrInvalidID
 	}
 
@@ -45,9 +34,9 @@ func Write(dir string, run model.Run) error {
 		return err
 	}
 
-	destination := filepath.Join(dir, run.ID+".json")
-	if filepath.Dir(destination) != filepath.Clean(dir) {
-		return ErrInvalidID
+	destination, err := artifactPath(dir, run.ID)
+	if err != nil {
+		return err
 	}
 
 	payload, err := encodedRun(run)
@@ -59,7 +48,7 @@ func Write(dir string, run model.Run) error {
 
 func encodedRun(run model.Run) ([]byte, error) {
 	var output bytes.Buffer
-	if err := render.RunJSON(&output, run); err != nil {
+	if err := Encode(&output, run); err != nil {
 		return nil, err
 	}
 	return output.Bytes(), nil

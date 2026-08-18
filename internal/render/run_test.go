@@ -169,4 +169,32 @@ func TestRunJSONIncludesIdentityTimestampsAndExclusions(t *testing.T) {
 	}
 }
 
+func TestInspectTextIsDeterministic(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	started := time.Date(2026, 8, 18, 15, 4, 5, 0, time.UTC)
+	finished := started.Add(2 * time.Second)
+	priority := uint16(0)
+	run := model.Run{
+		ID: "20260818T150405Z-abababababababab", StartedAt: started, FinishedAt: &finished,
+		Status: model.RunCompleted, Collectors: []string{"dns"},
+		Scope: model.ScopePolicy{Allowed: []model.Target{target}},
+		Evidence: []model.Evidence{
+			{Target: target, Category: "dns_record", RecordType: "A", Value: "192.0.2.10"},
+			{Target: target, Category: "dns_record", RecordType: "MX", Value: ".", Priority: &priority},
+			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "café"},
+		},
+		Errors: []model.RunError{
+			{Code: "no_result", Message: "DNS lookup returned no records", Collector: "dns", Target: &target, RecordType: "CNAME"},
+		},
+	}
+	var output bytes.Buffer
+	if err := InspectText(&output, run); err != nil {
+		t.Fatal(err)
+	}
+	want := "Saved reconnaissance run\n\nID:        20260818T150405Z-abababababababab\nStarted:   2026-08-18T15:04:05Z\nFinished:  2026-08-18T15:04:07Z\nStatus:    completed\n\nTargets\n  DNS  example.com\n\nExclusions\n  none\n\nCollectors\n  dns\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  MX     0  .\n  example.com  TXT    \"café\"\n\nDNS absence\n  example.com  CNAME  no records\n\nCollection failures\n  none\n"
+	if output.String() != want {
+		t.Fatalf("InspectText() = %q, want %q", output.String(), want)
+	}
+}
+
 func testInt(value int) *int { return &value }

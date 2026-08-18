@@ -489,6 +489,96 @@ func TestRunSaveDirFailureDoesNotPolluteJSONStdout(t *testing.T) {
 	}
 }
 
+func TestInspectRunTextAndJSON(t *testing.T) {
+	dir := t.TempDir()
+	env := fixedRunEnv(dnsResolver())
+	exitCode, _, stderr := runReconCommandEnv(
+		context.Background(), env,
+		"run", "--target", "example.com", "--collect", "dns", "--save-dir", dir,
+	)
+	if exitCode != exitSuccess || stderr != "" {
+		t.Fatalf("save exit = %d stderr = %q", exitCode, stderr)
+	}
+	id := "20260818T150405Z-abababababababab"
+	path := filepath.Join(dir, id+".json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &commandResolver{}
+	exitCode, stdout, stderr := runReconCommandEnv(
+		context.Background(), defaultEnv(resolver),
+		"inspect-run", "--run-dir", dir, "--id", id,
+	)
+	if exitCode != exitSuccess || stderr != "" {
+		t.Fatalf("inspect text exit = %d stderr = %q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "Saved reconnaissance run") || !strings.Contains(stdout, id) {
+		t.Fatalf("text stdout = %q", stdout)
+	}
+	if len(resolver.calls) != 0 {
+		t.Fatalf("inspect-run made resolver calls: %v", resolver.calls)
+	}
+
+	exitCode, jsonOut, stderr := runReconCommandEnv(
+		context.Background(), defaultEnv(resolver),
+		"inspect-run", "--run-dir", dir, "--id", id, "--format", "json",
+	)
+	if exitCode != exitSuccess || stderr != "" || !json.Valid([]byte(jsonOut)) {
+		t.Fatalf("inspect json exit = %d stderr = %q stdout = %q", exitCode, stderr, jsonOut)
+	}
+	if jsonOut != string(before) {
+		t.Fatalf("JSON inspect did not match saved artifact")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("inspect-run modified artifact bytes")
+	}
+}
+
+func TestInspectRunExpectedErrors(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode string
+		wantExit int
+	}{
+		{name: "missing run dir", args: []string{"inspect-run", "--id", "20260818T150405Z-abababababababab"}, wantCode: "missing_run_dir", wantExit: exitValidation},
+		{name: "missing id", args: []string{"inspect-run", "--run-dir", dir}, wantCode: "missing_run_id", wantExit: exitValidation},
+		{name: "path traversal id", args: []string{"inspect-run", "--run-dir", dir, "--id", "../secret"}, wantCode: "invalid_run_id", wantExit: exitValidation},
+		{name: "not found", args: []string{"inspect-run", "--run-dir", dir, "--id", "20260818T150405Z-abababababababab"}, wantCode: "artifact_not_found", wantExit: exitValidation},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := &commandResolver{}
+			exitCode, stdout, stderr := runReconCommandEnv(context.Background(), defaultEnv(resolver), test.args...)
+			if exitCode != test.wantExit || stdout != "" || !strings.Contains(stderr, test.wantCode) {
+				t.Fatalf("exit = %d stdout = %q stderr = %q", exitCode, stdout, stderr)
+			}
+			if len(resolver.calls) != 0 {
+				t.Fatalf("resolver calls = %v", resolver.calls)
+			}
+		})
+	}
+}
+
+func TestInspectRunJSONErrorUsesStdoutOnly(t *testing.T) {
+	exitCode, stdout, stderr := runCommand(
+		"inspect-run", "--run-dir", t.TempDir(), "--id", "20260818T150405Z-abababababababab", "--format", "json",
+	)
+	if exitCode != exitValidation || stderr != "" {
+		t.Fatalf("exit = %d stderr = %q", exitCode, stderr)
+	}
+	if !json.Valid([]byte(stdout)) || !strings.Contains(stdout, "artifact_not_found") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
 func runCommand(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	exitCode := run(args, &stdout, &stderr)

@@ -23,6 +23,7 @@ type Run struct {
 	StartedAt    time.Time     `json:"started_at,omitempty"`
 	FinishedAt   *time.Time    `json:"finished_at,omitempty"`
 	Status       RunStatus     `json:"status"`
+	Collectors   []string      `json:"collectors,omitempty"`
 	Scope        ScopePolicy   `json:"scope"`
 	Observations []Observation `json:"observations"`
 	Evidence     []Evidence    `json:"evidence"`
