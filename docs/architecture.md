@@ -85,12 +85,12 @@ against policy. DNS resolution and HTTP redirects must not widen scope.
 The DNS collector accepts a `context.Context`, the effective `ScopePolicy`, one
 normalized target, a resolver, and an explicit timeout. It supports DNS-name
 targets only. It re-evaluates exact authorization immediately before each A,
-AAAA, MX, NS, and canonical-name lookup, performs the lookups sequentially, and
+AAAA, MX, NS, canonical-name, and TXT lookup, performs the lookups sequentially, and
 has no retries, recursion, discovery, or concurrency.
 
-The small `dns.Resolver` interface contains only the context-aware `LookupIP`
-methods implemented by `net.Resolver`: `LookupIP`, `LookupMX`, `LookupNS`, and
-`LookupCNAME`. It exists so tests can prove
+The small `dns.Resolver` interface contains only the context-aware methods used
+from `net.Resolver`: `LookupIP`, `LookupMX`, `LookupNS`,
+`LookupCNAME`, and `LookupTXT`. It exists so tests can prove
 authorization-before-network behavior, cancellation, timeouts, evidence
 normalization, and failures without using public DNS. It is DNS-specific and is
 not a generic collector or dependency-injection framework. The CLI uses an
@@ -110,6 +110,22 @@ M2 records evidence only when that normalized name differs from the requested
 target. It does not manufacture a self-referential CNAME, parse DNS packets, or
 follow the returned name. MX evidence is sorted by preference then hostname;
 NS and other evidence use normalized values for deterministic ordering.
+
+TXT values are opaque, untrusted data: collection preserves case, internal
+whitespace, and empty strings, deduplicating only exact byte-identical values.
+Sorted values are bounded to 64 retained records, 4,096 source bytes per value,
+and 65,536 source bytes per target. Per-value truncation is represented only by
+the additive schema-v1 fields `truncated` and `original_length`; invalid UTF-8
+is base64 encoded with `encoding: "base64"`. Fully omitted records from the
+count or total-byte budgets produce a typed `evidence_limited` outcome with
+`omitted_records` and `omitted_bytes`. These limits describe ScopeForge
+retention, not DNS protocol constraints.
+
+Human TXT output uses Go-style quoting: newlines, carriage returns, tabs, ESC,
+and other control bytes are escaped, while printable Unicode remains readable.
+JSON preserves valid UTF-8 directly and uses the explicit base64 representation
+for invalid UTF-8. `evidence_limited` is informational and, like `no_result`,
+does not degrade run status.
 
 ## Errors
 

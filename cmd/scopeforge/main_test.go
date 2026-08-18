@@ -18,7 +18,13 @@ type commandResolver struct {
 	mx        map[string][]*net.MX
 	ns        map[string][]*net.NS
 	cname     map[string]string
+	txt       map[string][]string
 	calls     []string
+}
+
+func (resolver *commandResolver) LookupTXT(_ context.Context, host string) ([]string, error) {
+	resolver.calls = append(resolver.calls, "txt:"+host)
+	return resolver.txt[host], resolver.errors["txt:"+host]
 }
 
 func (resolver *commandResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, error) {
@@ -184,6 +190,8 @@ func TestRunDNSCollectsAuthorizedTargets(t *testing.T) {
 		"example.org": {{Host: "ns.example.org."}},
 	}, cname: map[string]string{
 		"example.com": "edge.example.net.", "example.org": "example.org.",
+	}, txt: map[string][]string{
+		"example.com": {"Verification=Ab C", "café"}, "example.org": {},
 	}}
 	exitCode, stdout, stderr := runReconCommand(
 		context.Background(), resolver,
@@ -192,15 +200,15 @@ func TestRunDNSCollectsAuthorizedTargets(t *testing.T) {
 	if exitCode != exitSuccess {
 		t.Fatalf("exit code = %d, want %d; stderr = %q", exitCode, exitSuccess, stderr)
 	}
-	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.example.net\n  example.com  MX     10  mail.example.net\n  example.com  NS     ns.example.net\n  example.org  A      198.51.100.10\n  example.org  AAAA   2001:db8::2\n  example.org  MX     20  mail.example.org\n  example.org  NS     ns.example.org\n\nDNS absence\n  example.org  CNAME  no records\n\nCollection failures\n  none\n"
+	want := "Run completed\n\nTargets\n  DNS  example.com\n  DNS  example.org\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.example.net\n  example.com  MX     10  mail.example.net\n  example.com  NS     ns.example.net\n  example.com  TXT    \"Verification=Ab C\"\n  example.com  TXT    \"café\"\n  example.org  A      198.51.100.10\n  example.org  AAAA   2001:db8::2\n  example.org  MX     20  mail.example.org\n  example.org  NS     ns.example.org\n\nDNS absence\n  example.org  CNAME  no records\n  example.org  TXT    no records\n\nCollection failures\n  none\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if len(resolver.calls) != 10 {
-		t.Fatalf("resolver calls = %v, want ten", resolver.calls)
+	if len(resolver.calls) != 12 {
+		t.Fatalf("resolver calls = %v, want twelve", resolver.calls)
 	}
 }
 
@@ -208,6 +216,8 @@ func TestRunDNSJSONOutputDoesNotExpandScope(t *testing.T) {
 	resolver := &commandResolver{responses: map[string][]net.IP{
 		"ip4:example.com": {net.ParseIP("192.0.2.10")},
 		"ip6:example.com": {net.ParseIP("2001:db8::1")},
+	}, txt: map[string][]string{
+		"example.com": {"café"},
 	}}
 	exitCode, stdout, stderr := runReconCommand(
 		context.Background(), resolver,
@@ -223,7 +233,8 @@ func TestRunDNSJSONOutputDoesNotExpandScope(t *testing.T) {
 			Value string `json:"value"`
 		} `json:"targets"`
 		Evidence []struct {
-			Value string `json:"value"`
+			RecordType string `json:"record_type"`
+			Value      string `json:"value"`
 		} `json:"evidence"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -232,8 +243,14 @@ func TestRunDNSJSONOutputDoesNotExpandScope(t *testing.T) {
 	if result.SchemaVersion != "1" || len(result.Targets) != 1 || result.Targets[0].Value != "example.com" {
 		t.Fatalf("scope in JSON = %#v", result.Targets)
 	}
-	if len(result.Evidence) != 2 || result.Evidence[0].Value != "192.0.2.10" || result.Evidence[1].Value != "2001:db8::1" {
+	if len(result.Evidence) != 3 || result.Evidence[0].Value != "192.0.2.10" || result.Evidence[1].Value != "2001:db8::1" {
 		t.Fatalf("evidence in JSON = %#v", result.Evidence)
+	}
+	if result.Evidence[2].RecordType != "TXT" || result.Evidence[2].Value != "café" {
+		t.Fatalf("TXT JSON evidence = %#v", result.Evidence[2])
+	}
+	if strings.Contains(stdout, `\u00e9`) {
+		t.Fatalf("JSON used ASCII escapes for printable TXT Unicode: %q", stdout)
 	}
 }
 
@@ -259,6 +276,17 @@ func TestNoResultDoesNotDegradeRunStatus(t *testing.T) {
 	run := model.Run{
 		Evidence: []model.Evidence{{Target: target, Category: "dns_record", RecordType: "A", Value: "192.0.2.10"}},
 		Errors:   []model.RunError{{Code: "no_result", Target: &target, RecordType: "MX"}},
+	}
+	if got := runStatus(run); got != model.RunCompleted {
+		t.Fatalf("runStatus() = %q, want completed", got)
+	}
+}
+
+func TestEvidenceLimitDoesNotDegradeRunStatus(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	run := model.Run{
+		Evidence: []model.Evidence{{Target: target, Category: "dns_record", RecordType: "TXT", Value: "retained"}},
+		Errors:   []model.RunError{{Code: "evidence_limited", Target: &target, RecordType: "TXT", OmittedRecords: 1}},
 	}
 	if got := runStatus(run); got != model.RunCompleted {
 		t.Fatalf("runStatus() = %q, want completed", got)

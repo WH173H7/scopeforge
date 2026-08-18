@@ -2,12 +2,14 @@ package dns
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/netip"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/WH173H7/scopeforge/internal/model"
 	"github.com/WH173H7/scopeforge/internal/scope"
@@ -15,12 +17,19 @@ import (
 
 var ErrUnauthorized = errors.New("DNS target is not authorized")
 
+const (
+	maxTXTRecords        = 64
+	maxTXTValueBytes     = 4096
+	maxTXTBytesPerTarget = 65536
+)
+
 // Resolver is the narrow part of net.Resolver used for supported DNS lookups.
 type Resolver interface {
 	LookupIP(context.Context, string, string) ([]net.IP, error)
 	LookupMX(context.Context, string) ([]*net.MX, error)
 	LookupNS(context.Context, string) ([]*net.NS, error)
 	LookupCNAME(context.Context, string) (string, error)
+	LookupTXT(context.Context, string) ([]string, error)
 }
 
 // Collect obtains supported DNS evidence for one explicitly authorized DNS target.
@@ -142,7 +151,84 @@ func Collect(
 		}
 	}
 
+	if !scope.Allows(policy, target) {
+		return evidence, failures, ErrUnauthorized
+	}
+	txtCtx, cancel := context.WithTimeout(ctx, timeout)
+	txtRecords, err := resolver.LookupTXT(txtCtx, target.Value)
+	txtContextError := txtCtx.Err()
+	cancel()
+	if err != nil {
+		failures = append(failures, lookupFailure(target, "TXT", err, txtContextError))
+	} else {
+		txtEvidence, limitOutcome := boundedTXT(target, txtRecords)
+		if len(txtEvidence) == 0 && limitOutcome == nil {
+			failures = append(failures, noResult(target, "TXT"))
+		} else {
+			evidence = append(evidence, txtEvidence...)
+			if limitOutcome != nil {
+				failures = append(failures, *limitOutcome)
+			}
+		}
+	}
+
 	return evidence, failures, nil
+}
+
+func boundedTXT(target model.Target, records []string) ([]model.Evidence, *model.RunError) {
+	unique := make(map[string]struct{}, len(records))
+	for _, value := range records {
+		unique[value] = struct{}{}
+	}
+	values := make([]string, 0, len(unique))
+	for value := range unique {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+
+	evidence := make([]model.Evidence, 0, min(len(values), maxTXTRecords))
+	retainedBytes := 0
+	omittedRecords, omittedBytes := 0, 0
+	for _, value := range values {
+		originalLength := len(value)
+		if len(evidence) == maxTXTRecords || retainedBytes == maxTXTBytesPerTarget {
+			omittedRecords++
+			omittedBytes += originalLength
+			continue
+		}
+
+		retainLength := min(originalLength, maxTXTValueBytes, maxTXTBytesPerTarget-retainedBytes)
+		retained := []byte(value)[:retainLength]
+		item := model.Evidence{Target: target, Category: "dns_record", RecordType: "TXT"}
+		if utf8.ValidString(value) {
+			for retainLength > 0 && !utf8.Valid(retained) {
+				retainLength--
+				retained = retained[:retainLength]
+			}
+			item.Value = string(retained)
+		} else {
+			item.Value = base64.StdEncoding.EncodeToString(retained)
+			item.Encoding = "base64"
+		}
+		retainedBytes += len(retained)
+		if len(retained) < originalLength {
+			item.Truncated = true
+			item.OriginalLength = intPointer(originalLength)
+		}
+		evidence = append(evidence, item)
+	}
+
+	if omittedRecords == 0 {
+		return evidence, nil
+	}
+	return evidence, &model.RunError{
+		Code: "evidence_limited", Message: "TXT evidence exceeded retention limits", Collector: "dns",
+		Target: targetPointer(target), RecordType: "TXT", OmittedRecords: omittedRecords, OmittedBytes: omittedBytes,
+	}
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func normalizedMX(target model.Target, records []*net.MX) []model.Evidence {
