@@ -165,7 +165,8 @@ func TestWriteDoesNotOverwriteExistingArtifact(t *testing.T) {
 	dir := t.TempDir()
 	run := sampleRun()
 	path := filepath.Join(dir, run.ID+".json")
-	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+	original := []byte("keep-existing-artifact-bytes")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := Write(dir, run); !errors.Is(err, ErrExists) {
@@ -175,20 +176,61 @@ func TestWriteDoesNotOverwriteExistingArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "keep" {
+	if !bytes.Equal(body, original) {
 		t.Fatalf("existing artifact overwritten: %q", body)
 	}
-	assertNoTemporaryFiles(t, dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != run.ID+".json" {
+		t.Fatalf("directory after collision = %v", names(entries))
+	}
 }
 
-func TestWriteRejectsInvalidIDAndLeavesNoTemporaryFile(t *testing.T) {
+func TestWriteSecondCallDoesNotReplaceFirstArtifact(t *testing.T) {
+	dir := t.TempDir()
+	run := sampleRun()
+	if err := Write(dir, run); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, run.ID+".json")
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(first, new(map[string]any)); err != nil {
+		t.Fatalf("first artifact is invalid JSON: %v", err)
+	}
+	run.Status = model.RunFailed
+	if err := Write(dir, run); !errors.Is(err, ErrExists) {
+		t.Fatalf("second Write() error = %v, want ErrExists", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("second Write replaced the artifact")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != filePermission {
+			t.Fatalf("file mode = %o, want %o", info.Mode().Perm(), filePermission)
+		}
+	}
+}
+
+func TestWriteRejectsInvalidIDWithoutCreatingFiles(t *testing.T) {
 	dir := t.TempDir()
 	run := sampleRun()
 	run.ID = "../example.com"
 	if err := Write(dir, run); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("Write() error = %v, want ErrInvalidID", err)
 	}
-	assertNoTemporaryFiles(t, dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +240,7 @@ func TestWriteRejectsInvalidIDAndLeavesNoTemporaryFile(t *testing.T) {
 	}
 }
 
-func TestWriteCleansTemporaryFileOnFailure(t *testing.T) {
+func TestWriteCleansIncompleteArtifactOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory permissions are not Unix-like")
 	}
@@ -211,7 +253,13 @@ func TestWriteCleansTemporaryFileOnFailure(t *testing.T) {
 	if err := Write(dir, run); err == nil {
 		t.Fatal("Write() succeeded in a read-only directory")
 	}
-	assertNoTemporaryFiles(t, dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("incomplete artifact left behind: %v", names(entries))
+	}
 }
 
 func TestWriteDoesNotChmodExistingDirectory(t *testing.T) {
@@ -267,17 +315,4 @@ func names(entries []os.DirEntry) []string {
 		result = append(result, entry.Name())
 	}
 	return result
-}
-
-func assertNoTemporaryFiles(t *testing.T, dir string) {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".tmp") || strings.HasPrefix(entry.Name(), ".") {
-			t.Fatalf("temporary file left behind: %s", entry.Name())
-		}
-	}
 }

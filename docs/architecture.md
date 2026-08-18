@@ -257,12 +257,16 @@ These modes are the Unix intent; Windows file-mode semantics are not claimed.
 The destination name is `<run-id>.json` inside the requested directory. An
 existing destination is an error, not an overwrite.
 
-Writes use a same-directory hidden temporary file, `O_EXCL` create, write,
-`Sync`, close, then `Rename` onto the final name. Temporary files are removed
-after expected write failures. This avoids leaving a truncated final JSON file
-in the usual failure cases. It is not a crash-proof transaction: a crash during
-rename can leave a temporary file, and Unix `rename` can replace a name created
-in a race after the existence check. ScopeForge does not retry that overwrite.
+Writes open that final path with `O_WRONLY|O_CREATE|O_EXCL` and mode `0600`,
+then write the complete canonical JSON, `Sync`, and close. `O_EXCL` is the
+no-overwrite guarantee: if the name already exists, creation fails and
+ScopeForge returns `ErrExists` without replacing the file. There is no
+separate existence check and no rename onto the destination.
+
+A detected write, sync, or close failure removes the incomplete destination
+where practical. This is not transactional persistence. It does not guarantee
+crash-atomic replacement of a partial file, durability beyond the performed
+`Sync`, or cleanup after process or machine termination.
 
 Rendering is implemented separately from policy validation. The text renderer
 sorts normalized targets by kind and value. JSON uses the same deterministic

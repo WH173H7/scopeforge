@@ -29,6 +29,10 @@ var (
 // Write serializes a completed run with the canonical JSON encoder into dir.
 // It creates dir with owner-only permissions when the directory does not yet
 // exist, and does not chmod a pre-existing directory.
+//
+// The destination is created with O_EXCL so an existing artifact is never
+// replaced. A detected write, sync, or close failure removes the incomplete
+// file where practical. This is not crash-atomic persistence.
 func Write(dir string, run model.Run) error {
 	if dir == "" {
 		return ErrInvalidDir
@@ -45,29 +49,12 @@ func Write(dir string, run model.Run) error {
 	if filepath.Dir(destination) != filepath.Clean(dir) {
 		return ErrInvalidID
 	}
-	if _, err := os.Lstat(destination); err == nil {
-		return ErrExists
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 
 	payload, err := encodedRun(run)
 	if err != nil {
 		return err
 	}
-
-	temporary := filepath.Join(dir, "."+run.ID+".json.tmp")
-	if err := writeTemporary(temporary, payload); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, destination); err != nil {
-		_ = os.Remove(temporary)
-		if _, exists := os.Lstat(destination); exists == nil {
-			return ErrExists
-		}
-		return err
-	}
-	return nil
+	return writeExclusive(destination, payload)
 }
 
 func encodedRun(run model.Run) ([]byte, error) {
@@ -98,9 +85,12 @@ func ensureDir(dir string) error {
 	}
 }
 
-func writeTemporary(path string, payload []byte) error {
+func writeExclusive(path string, payload []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePermission)
 	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return ErrExists
+		}
 		return err
 	}
 	keep := false
