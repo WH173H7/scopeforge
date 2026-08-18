@@ -2,10 +2,10 @@
 
 ## Status and intent
 
-This document records the M0 foundation, M1 scope-validation command, and M2
-DNS evidence collection. ScopeForge is designed for authorised,
-primarily passive reconnaissance. Active assessment is not part of the current
-milestones.
+This document records the M0 foundation, M1 scope-validation command, M2
+DNS evidence collection, and M3A opt-in filesystem persistence of completed
+run artifacts. ScopeForge is designed for authorised, primarily passive
+reconnaissance. Active assessment is not part of the current milestones.
 
 ## Goals
 
@@ -29,22 +29,24 @@ milestones.
 
 ```text
 cmd/scopeforge       executable entry point
+internal/artifact    opt-in filesystem persistence of completed runs
 internal/dns         scoped DNS evidence collection
 internal/model       run, target, observation, evidence, and error types
 internal/render      deterministic text and JSON output
 internal/scope       target parsing and explicit policy evaluation
 ```
 
-Packages for other collectors, persistence, configuration, and logging will be
-introduced only when their behavior is implemented. Keeping all domain packages
-under `internal` avoids committing to a public Go API prematurely.
+Packages for other collectors, configuration, and logging will be introduced
+only when their behavior is implemented. Keeping all domain packages under
+`internal` avoids committing to a public Go API prematurely.
 
 ## Run data model
 
 A `Run` records status, the exact `ScopePolicy` snapshot used for authorization
-decisions, evidence, observations, and structured run errors. ID and timestamp
-fields remain available for future persistent runs but are omitted from M2A
-output because this command has no concrete need for them.
+decisions, evidence, observations, and structured run errors. M3A populates run
+ID, `StartedAt`, and `FinishedAt` for every reconnaissance execution so a
+completed run can be persisted without a second data model. ID and timestamps
+are omitted from JSON when empty, which keeps earlier fixtures valid.
 
 An `Observation` contains a stable kind, the collector that produced it, its
 subject, observation time, structured fields, and optional evidence references.
@@ -174,7 +176,9 @@ schema version may name these outcomes separately.
 Successful result output belongs on stdout; operational logs and text-mode
 diagnostics belong on stderr. A JSON-mode expected error is emitted as the only
 value on stdout so automation receives valid structured output; stderr remains
-empty unless writing that result itself fails. Logging
+empty unless writing that result itself fails. Persistence failures after a
+rendered run keep that run JSON on stdout and report `artifact_write_failed` on
+stderr. Logging
 will use structured key/value records through the standard library's `log/slog`.
 Default level is `INFO`, with an explicit verbose option enabling `DEBUG`.
 Fields should use stable names such as `run_id`, `collector`, `target`, and
@@ -203,7 +207,7 @@ scopeforge version
 scopeforge validate-scope --target TARGET [--target TARGET...] \
   [--exclude TARGET...] [--format text|json]
 scopeforge run --target TARGET [--target TARGET...] --collect dns \
-  [--format text|json]
+  [--format text|json] [--save-dir DIR]
 ```
 
 M1 implements `validate-scope` using the standard library `flag` package.
@@ -216,10 +220,53 @@ writes to injected streams so behavior is directly testable. Exit codes are:
 
 ```text
 0  success
-1  unexpected internal failure
+1  unexpected internal failure, or a requested run artifact could not be saved
 2  CLI or usage failure
 3  scope validation failure
 ```
+
+`--save-dir` is optional. When it is omitted, no run artifact is written.
+When it is present, stdout still receives the normal text or JSON run result
+first. A persistence failure is reported as `artifact_write_failed` on stderr
+and exits 1 without rewriting or appending to stdout, so `--format json`
+remains a single valid JSON document. Exit 1 is used because saving was part of
+the requested command and the existing 2/3 codes already mean usage and scope
+validation failures.
+
+## Persistent run artifacts
+
+M3A persists exactly the in-memory `Run` after collection. It does not repeat
+DNS lookups, follow evidence, or expand scope. The `internal/artifact` package
+is the filesystem boundary; it is not a storage framework or database
+abstraction.
+
+Run IDs are generated with the standard library: a UTC `YYYYMMDDThhmmssZ`
+prefix plus eight cryptographically random bytes as lowercase hex, for example
+`20260818T150405Z-abababababababab`. The format is filesystem-safe, compact,
+and independent of target names. Tests inject a clock function and an
+`io.Reader` at that ID boundary. Empty or path-like IDs are rejected.
+
+`StartedAt` is captured immediately before collection. `FinishedAt` is captured
+after collection and status assignment, including cancellation and collector
+failure. Both are stored and serialized as UTC RFC3339/RFC3339Nano values.
+Tests inject `now` rather than sleeping on the wall clock.
+
+When ScopeForge creates `--save-dir`, it uses permission `0700` and does not
+chmod a directory that already existed. Artifact files are created with `0600`.
+These modes are the Unix intent; Windows file-mode semantics are not claimed.
+The destination name is `<run-id>.json` inside the requested directory. An
+existing destination is an error, not an overwrite.
+
+Writes open that final path with `O_WRONLY|O_CREATE|O_EXCL` and mode `0600`,
+then write the complete canonical JSON, `Sync`, and close. `O_EXCL` is the
+no-overwrite guarantee: if the name already exists, creation fails and
+ScopeForge returns `ErrExists` without replacing the file. There is no
+separate existence check and no rename onto the destination.
+
+A detected write, sync, or close failure removes the incomplete destination
+where practical. This is not transactional persistence. It does not guarantee
+crash-atomic replacement of a partial file, durability beyond the performed
+`Sync`, or cleanup after process or machine termination.
 
 Rendering is implemented separately from policy validation. The text renderer
 sorts normalized targets by kind and value. JSON uses the same deterministic
@@ -235,10 +282,12 @@ ordering and this version 1 contract:
 ```
 
 The `run` command has its own version 1 JSON result containing `status`,
-`targets`, `collectors`, `evidence`, and `errors`. Its targets and evidence are
-sorted deterministically, and empty evidence/error collections are encoded as
-arrays rather than `null`. Incompatible structured-output changes require a
-schema-version change.
+`targets`, `exclusions`, `collectors`, `evidence`, and `errors`. Additive
+identity fields `id`, `started_at`, and `finished_at` appear when populated.
+Its targets, exclusions, and evidence are sorted deterministically, and empty
+evidence/error/exclusion collections are encoded as arrays rather than `null`.
+Incompatible structured-output changes require a schema-version change. stdout
+JSON and persisted artifacts are produced by the same encoder.
 
 ## Testing strategy
 
@@ -251,6 +300,8 @@ schema-version change.
   deterministic clocks, and controlled resolvers.
 - Test DNS through a controllable resolver; automated tests never require the
   system resolver or Internet connectivity.
+- Test filesystem persistence in temporary directories with injected clocks and
+  run IDs; do not depend on a developer home directory or wall-clock sleeps.
 - Run race detection on code that introduces concurrency.
 - Prefer observable behavior and boundary conditions over internal call counts.
 
@@ -269,8 +320,9 @@ behavior should be tested when OS-specific code first appears.
   collector timeouts.
 - Identify the client honestly where protocols support it and respect source
   terms and rate limits.
-- Minimize collected personal data and define retention/redaction behavior for
-  evidence before persistence is implemented.
+- Minimize collected personal data. Persisted run artifacts contain
+  reconnaissance evidence and should be treated as sensitive; M3A does not
+  implement automatic retention, redaction, or encryption-at-rest.
 - Keep credentials out of CLI arguments where practical, logs, result files,
   and error strings. Treat response content as untrusted input.
 - Passive sources can still cause operational or legal impact; "passive" is
@@ -282,8 +334,9 @@ Exact matching is less convenient than wildcard or CIDR policies, but it makes
 M0 authorization semantics reviewable. A richer policy syntax should be added
 only with explicit boundary rules and tests. Flexible observation fields avoid
 prematurely modeling every future protocol; stable observation kinds and a
-future versioned JSON schema will constrain interoperability before persistence.
-No generic collector abstraction exists because one DNS implementation is not
-enough evidence for a common collector lifecycle. The narrow resolver boundary
-is sufficient for deterministic network tests without dictating future
-collectors.
+future versioned JSON schema will constrain interoperability. Persistence is an
+explicit filesystem write of the canonical run JSON, not a database or generic
+repository. No generic collector abstraction exists because one DNS
+implementation is not enough evidence for a common collector lifecycle. The
+narrow resolver boundary is sufficient for deterministic network tests without
+dictating future collectors.

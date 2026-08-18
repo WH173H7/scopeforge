@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/WH173H7/scopeforge/internal/model"
 )
@@ -14,8 +15,12 @@ const runSchemaVersion = "1"
 
 type runResult struct {
 	SchemaVersion string            `json:"schema_version"`
+	ID            string            `json:"id,omitempty"`
+	StartedAt     string            `json:"started_at,omitempty"`
+	FinishedAt    string            `json:"finished_at,omitempty"`
 	Status        model.RunStatus   `json:"status"`
 	Targets       []outputTarget    `json:"targets"`
+	Exclusions    []outputTarget    `json:"exclusions"`
 	Collectors    []string          `json:"collectors"`
 	Evidence      []runEvidence     `json:"evidence"`
 	Errors        []collectionError `json:"errors"`
@@ -167,13 +172,31 @@ func RunJSON(output io.Writer, run model.Run) error {
 	}
 	result := runResult{
 		SchemaVersion: runSchemaVersion,
+		ID:            run.ID,
+		StartedAt:     rfc3339UTC(run.StartedAt),
+		FinishedAt:    rfc3339UTCPointer(run.FinishedAt),
 		Status:        run.Status,
 		Targets:       outputTargets(ordered(run.Scope.Allowed)),
+		Exclusions:    outputTargets(ordered(run.Scope.Excluded)),
 		Collectors:    []string{"dns"},
 		Evidence:      outputEvidence,
 		Errors:        errors,
 	}
 	return json.NewEncoder(output).Encode(result)
+}
+
+func rfc3339UTC(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func rfc3339UTCPointer(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return rfc3339UTC(*value)
 }
 
 func orderedEvidence(evidence []model.Evidence) []model.Evidence {

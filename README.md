@@ -6,7 +6,7 @@ displays explicit exact-match scope policies and collects DNS A, AAAA, CNAME,
 MX, NS, and TXT evidence for explicitly authorised DNS names.
 
 ScopeForge is intended to grow toward passive DNS, certificate, RDAP, and HTTP
-metadata collection; persistent runs; run comparison; JSON output; and
+metadata collection; run inspection; run comparison; JSON output; and
 human-readable reports. Active assessment is outside the first milestone.
 
 ## Current commands
@@ -15,7 +15,7 @@ human-readable reports. Active assessment is outside the first milestone.
 scopeforge help
 scopeforge version
 scopeforge validate-scope --target VALUE [options]
-scopeforge run --target VALUE --collect dns [options]
+scopeforge run --target VALUE --collect dns [--save-dir DIR] [options]
 ```
 
 `--target` and `--exclude` are repeatable and accept exact DNS names or IP
@@ -63,6 +63,26 @@ are reported with an explicit evidence_limited outcome. Invalid UTF-8 is
 represented as base64; human output quotes TXT values so control characters
 cannot be emitted directly to a terminal, while printable Unicode remains
 readable.
+
+## Persistent run artifacts
+
+Persistence is opt-in. Without `--save-dir`, ScopeForge writes only to stdout
+and creates no run files.
+
+```sh
+scopeforge run --target example.com --collect dns --save-dir ./runs
+scopeforge run --target example.com --collect dns --format json --save-dir ./runs
+```
+
+When `--save-dir` is set, the normal stdout result is still printed, and one
+versioned JSON artifact is written as `<run-id>.json` inside that directory.
+Filenames use a generated run ID, not target names. Artifacts reuse the same
+schema version 1 JSON contract as `--format json`, including run identity,
+timestamps, authorized scope, evidence, and structured outcomes. Treat stored
+artifacts as potentially sensitive reconnaissance data.
+
+If the artifact cannot be written, stdout still contains the run result and
+the process exits non-zero with `artifact_write_failed`.
 
 ## Development
 

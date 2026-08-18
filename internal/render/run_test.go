@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/WH173H7/scopeforge/internal/model"
 )
@@ -118,7 +119,7 @@ func TestRunJSONIsDeterministicAndVersioned(t *testing.T) {
 	if err := RunJSON(&output, run); err != nil {
 		t.Fatal(err)
 	}
-	want := "{\"schema_version\":\"1\",\"status\":\"completed\",\"targets\":[{\"kind\":\"dns\",\"value\":\"example.com\"}],\"collectors\":[\"dns\"],\"evidence\":[{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"A\",\"value\":\"192.0.2.10\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"AAAA\",\"value\":\"2001:db8::1\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"CNAME\",\"value\":\"edge.provider.net\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"MX\",\"value\":\".\",\"priority\":0},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"MX\",\"value\":\"mail.example.net\",\"priority\":10},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"TXT\",\"value\":\"YWJj\",\"encoding\":\"base64\",\"truncated\":true,\"original_length\":5000}],\"errors\":[]}\n"
+	want := "{\"schema_version\":\"1\",\"status\":\"completed\",\"targets\":[{\"kind\":\"dns\",\"value\":\"example.com\"}],\"exclusions\":[],\"collectors\":[\"dns\"],\"evidence\":[{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"A\",\"value\":\"192.0.2.10\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"AAAA\",\"value\":\"2001:db8::1\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"CNAME\",\"value\":\"edge.provider.net\"},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"MX\",\"value\":\".\",\"priority\":0},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"MX\",\"value\":\"mail.example.net\",\"priority\":10},{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"TXT\",\"value\":\"YWJj\",\"encoding\":\"base64\",\"truncated\":true,\"original_length\":5000}],\"errors\":[]}\n"
 	if output.String() != want {
 		t.Fatalf("RunJSON() = %q, want %q", output.String(), want)
 	}
@@ -142,6 +143,29 @@ func TestRunJSONPreservesPrintableTXTUnicode(t *testing.T) {
 	}
 	if bytes.Contains(output.Bytes(), []byte(`\u00e9`)) {
 		t.Fatalf("JSON used ASCII escapes for printable TXT Unicode: %q", output.String())
+	}
+}
+
+func TestRunJSONIncludesIdentityTimestampsAndExclusions(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	excluded := model.Target{Kind: model.TargetDNSName, Value: "ignored.example"}
+	started := time.Date(2026, 8, 18, 15, 4, 5, 0, time.UTC)
+	finished := started.Add(2 * time.Second)
+	run := model.Run{
+		ID: "20260818T150405Z-aaaaaaaaaaaaaaaa", StartedAt: started, FinishedAt: &finished,
+		Status: model.RunCompleted,
+		Scope:  model.ScopePolicy{Allowed: []model.Target{target}, Excluded: []model.Target{excluded}},
+		Evidence: []model.Evidence{
+			{Target: target, Category: "dns_record", RecordType: "A", Value: "192.0.2.10"},
+		},
+	}
+	var output bytes.Buffer
+	if err := RunJSON(&output, run); err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"schema_version\":\"1\",\"id\":\"20260818T150405Z-aaaaaaaaaaaaaaaa\",\"started_at\":\"2026-08-18T15:04:05Z\",\"finished_at\":\"2026-08-18T15:04:07Z\",\"status\":\"completed\",\"targets\":[{\"kind\":\"dns\",\"value\":\"example.com\"}],\"exclusions\":[{\"kind\":\"dns\",\"value\":\"ignored.example\"}],\"collectors\":[\"dns\"],\"evidence\":[{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"A\",\"value\":\"192.0.2.10\"}],\"errors\":[]}\n"
+	if output.String() != want {
+		t.Fatalf("RunJSON() = %q, want %q", output.String(), want)
 	}
 }
 
