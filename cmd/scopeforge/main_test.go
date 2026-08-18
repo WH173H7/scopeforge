@@ -6,9 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/WH173H7/scopeforge/internal/artifact"
 	"github.com/WH173H7/scopeforge/internal/model"
 )
 
@@ -320,6 +324,171 @@ func TestRunRejectsInvalidInputBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestRunWithoutSaveDirWritesNoArtifact(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	resolver := dnsResolver()
+	exitCode, stdout, stderr := runReconCommandEnv(
+		context.Background(), fixedRunEnv(resolver),
+		"run", "--target", "example.com", "--collect", "dns",
+	)
+	if exitCode != exitSuccess || stderr != "" || stdout == "" {
+		t.Fatalf("exit = %d stdout = %q stderr = %q", exitCode, stdout, stderr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("unexpected files without --save-dir: %v", entries)
+	}
+}
+
+func TestRunSaveDirWritesOneCanonicalArtifact(t *testing.T) {
+	dir := t.TempDir()
+	resolver := dnsResolver()
+	env := fixedRunEnv(resolver)
+	exitCode, stdout, stderr := runReconCommandEnv(
+		context.Background(), env,
+		"run", "--target", "example.com", "--collect", "dns", "--save-dir", dir,
+	)
+	if exitCode != exitSuccess || stderr != "" {
+		t.Fatalf("exit = %d stderr = %q", exitCode, stderr)
+	}
+
+	_, withoutSave, withoutErr := runReconCommandEnv(
+		context.Background(), fixedRunEnv(dnsResolver()),
+		"run", "--target", "example.com", "--collect", "dns",
+	)
+	if withoutErr != "" || stdout != withoutSave {
+		t.Fatalf("stdout changed when --save-dir was added")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "20260818T150405Z-abababababababab.json" {
+		t.Fatalf("artifacts = %v", entries)
+	}
+	if strings.Contains(entries[0].Name(), "example.com") {
+		t.Fatal("artifact filename included a target name")
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		SchemaVersion string `json:"schema_version"`
+		ID            string `json:"id"`
+		StartedAt     string `json:"started_at"`
+		FinishedAt    string `json:"finished_at"`
+		Status        string `json:"status"`
+		Collectors    []string
+		Targets       []struct{ Value string }
+		Evidence      []struct {
+			RecordType string `json:"record_type"`
+			Value      string `json:"value"`
+		}
+		Errors []struct{ Code string }
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatalf("artifact JSON: %v", err)
+	}
+	if document.SchemaVersion != "1" || document.ID != "20260818T150405Z-abababababababab" {
+		t.Fatalf("identity = %#v", document)
+	}
+	if document.StartedAt != "2026-08-18T15:04:05Z" || document.FinishedAt != "2026-08-18T15:04:06Z" {
+		t.Fatalf("timestamps = %#v", document)
+	}
+	if document.Status != "completed" || len(document.Collectors) != 1 || document.Collectors[0] != "dns" {
+		t.Fatalf("run metadata = %#v", document)
+	}
+	if len(document.Targets) != 1 || document.Targets[0].Value != "example.com" {
+		t.Fatalf("targets = %#v", document.Targets)
+	}
+	if len(document.Evidence) < 3 {
+		t.Fatalf("evidence = %#v", document.Evidence)
+	}
+}
+
+func TestRunSaveDirJSONStdoutRemainsValidAndDoesNotCallResolverAgain(t *testing.T) {
+	dir := t.TempDir()
+	resolver := dnsResolver()
+	exitCode, stdout, stderr := runReconCommandEnv(
+		context.Background(), fixedRunEnv(resolver),
+		"run", "--target", "example.com", "--collect", "dns", "--format", "json", "--save-dir", dir,
+	)
+	if exitCode != exitSuccess || stderr != "" {
+		t.Fatalf("exit = %d stderr = %q", exitCode, stderr)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout JSON: %v body = %q", err, stdout)
+	}
+	if document["id"] != "20260818T150405Z-abababababababab" {
+		t.Fatalf("stdout id = %#v", document["id"])
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "20260818T150405Z-abababababababab.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout != string(body) {
+		t.Fatalf("stdout JSON did not match artifact")
+	}
+	if len(resolver.calls) != 6 {
+		t.Fatalf("resolver calls = %v, want six collection lookups", resolver.calls)
+	}
+}
+
+func TestRunSaveDirDoesNotOverwriteExistingArtifact(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20260818T150405Z-abababababababab.json")
+	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := dnsResolver()
+	exitCode, stdout, stderr := runReconCommandEnv(
+		context.Background(), fixedRunEnv(resolver),
+		"run", "--target", "example.com", "--collect", "dns", "--format", "json", "--save-dir", dir,
+	)
+	if exitCode != exitInternal || !strings.Contains(stderr, "artifact_write_failed") {
+		t.Fatalf("exit = %d stderr = %q", exitCode, stderr)
+	}
+	if !json.Valid([]byte(stdout)) || strings.Contains(stdout, "artifact_write_failed") {
+		t.Fatalf("JSON stdout polluted: %q", stdout)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "keep" {
+		t.Fatalf("existing artifact overwritten: %q", body)
+	}
+}
+
+func TestRunSaveDirFailureDoesNotPolluteJSONStdout(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, stdout, stderr := runReconCommandEnv(
+		context.Background(), fixedRunEnv(dnsResolver()),
+		"run", "--target", "example.com", "--collect", "dns", "--format", "json", "--save-dir", blocked,
+	)
+	if exitCode != exitInternal || !strings.Contains(stderr, "artifact_write_failed") {
+		t.Fatalf("exit = %d stderr = %q", exitCode, stderr)
+	}
+	if !json.Valid([]byte(stdout)) || strings.Contains(stdout, "artifact_write_failed") {
+		t.Fatalf("JSON stdout polluted: %q", stdout)
+	}
+	if strings.Contains(stderr, "café") || strings.Contains(stderr, "192.0.2.10") {
+		t.Fatalf("stderr duplicated evidence: %q", stderr)
+	}
+}
+
 func runCommand(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	exitCode := run(args, &stdout, &stderr)
@@ -327,9 +496,37 @@ func runCommand(args ...string) (int, string, string) {
 }
 
 func runReconCommand(ctx context.Context, resolver *commandResolver, args ...string) (int, string, string) {
+	return runReconCommandEnv(ctx, defaultEnv(resolver), args...)
+}
+
+func runReconCommandEnv(ctx context.Context, env runEnv, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	exitCode := runContext(ctx, args, &stdout, &stderr, resolver)
+	exitCode := runContext(ctx, args, &stdout, &stderr, env)
 	return exitCode, stdout.String(), stderr.String()
+}
+
+func fixedRunEnv(resolver *commandResolver) runEnv {
+	started := time.Date(2026, 8, 18, 15, 4, 5, 0, time.UTC)
+	calls := 0
+	return runEnv{
+		resolver: resolver,
+		now: func() time.Time {
+			defer func() { calls++ }()
+			return started.Add(time.Duration(calls) * time.Second)
+		},
+		newID: func(now time.Time) (string, error) {
+			return artifact.NewID(now, bytes.NewReader(bytes.Repeat([]byte{0xab}, 8)))
+		},
+	}
+}
+
+func dnsResolver() *commandResolver {
+	return &commandResolver{responses: map[string][]net.IP{
+		"ip4:example.com": {net.ParseIP("192.0.2.10")},
+		"ip6:example.com": {net.ParseIP("2001:db8::1")},
+	}, txt: map[string][]string{
+		"example.com": {"café"},
+	}}
 }
 
 func TestRunVersion(t *testing.T) {

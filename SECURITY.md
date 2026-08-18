@@ -36,6 +36,9 @@ TXT content is treated as attacker-controlled evidence, never as a command or
 authorization signal. Retention limits bound its output, invalid UTF-8 is
 represented explicitly, and control characters are escaped in human output.
 
-Reports may contain sensitive infrastructure information. Store them with
-appropriate access controls, retention limits, and encryption. Never include
-authentication tokens or secrets in bug reports, logs, fixtures, or examples.
+Reports and saved run artifacts may contain sensitive infrastructure
+information. Store them with appropriate access controls, retention limits, and
+encryption. ScopeForge creates `--save-dir` and artifact files with owner-only
+permissions when the platform permits and when it creates those paths itself.
+It does not chmod a pre-existing save directory. Never include authentication
+tokens or secrets in bug reports, logs, fixtures, or examples.

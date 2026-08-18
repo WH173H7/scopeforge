@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
+	"github.com/WH173H7/scopeforge/internal/artifact"
 	"github.com/WH173H7/scopeforge/internal/dns"
 	"github.com/WH173H7/scopeforge/internal/model"
 	"github.com/WH173H7/scopeforge/internal/render"
@@ -46,17 +49,33 @@ func (values *stringList) Set(value string) error {
 	return nil
 }
 
+type runEnv struct {
+	resolver dns.Resolver
+	now      func() time.Time
+	newID    func(time.Time) (string, error)
+}
+
+func defaultEnv(resolver dns.Resolver) runEnv {
+	return runEnv{
+		resolver: resolver,
+		now:      func() time.Time { return time.Now().UTC() },
+		newID: func(now time.Time) (string, error) {
+			return artifact.NewID(now, rand.Reader)
+		},
+	}
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, systemResolver))
+	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, defaultEnv(systemResolver)))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	return runContext(context.Background(), args, stdout, stderr, systemResolver)
+	return runContext(context.Background(), args, stdout, stderr, defaultEnv(systemResolver))
 }
 
-func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, resolver dns.Resolver) int {
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, env runEnv) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		printUsage(stdout)
 		return exitSuccess
@@ -71,7 +90,7 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, re
 		return runValidateScope(args[1:], stdout, stderr)
 	}
 	if args[0] == "run" {
-		return runReconnaissance(ctx, args[1:], stdout, stderr, resolver)
+		return runReconnaissance(ctx, args[1:], stdout, stderr, env)
 	}
 
 	fmt.Fprintf(stderr, "scopeforge: unknown command %q\n", args[0])
@@ -83,15 +102,16 @@ func runReconnaissance(
 	ctx context.Context,
 	args []string,
 	stdout, stderr io.Writer,
-	resolver dns.Resolver,
+	env runEnv,
 ) int {
 	var targets stringList
-	collector, format := "", "text"
+	collector, format, saveDir := "", "text", ""
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var(&targets, "target", "exact DNS name to authorize (repeatable)")
 	flags.StringVar(&collector, "collect", collector, "collector to run (dns)")
 	flags.StringVar(&format, "format", format, "output format: text or json")
+	flags.StringVar(&saveDir, "save-dir", saveDir, "directory for one JSON run artifact")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -112,6 +132,9 @@ func runReconnaissance(
 	if len(targets) == 0 {
 		return expectedError(stdout, stderr, format, "missing_target", "at least one target is required", exitValidation)
 	}
+	if strings.TrimSpace(saveDir) == "" && saveDir != "" {
+		return expectedError(stdout, stderr, format, "invalid_usage", "save directory is invalid", exitUsage)
+	}
 
 	policy, err := scope.NewPolicy(targets, nil)
 	if err != nil {
@@ -123,12 +146,18 @@ func runReconnaissance(
 		}
 	}
 
+	startedAt := env.now()
+	runID, err := env.newID(startedAt)
+	if err != nil {
+		fmt.Fprintln(stderr, "scopeforge: internal_error: could not assign run ID")
+		return exitInternal
+	}
 	runResult := model.Run{
-		Status: model.RunCompleted, Scope: policy,
+		ID: runID, StartedAt: startedAt, Status: model.RunCompleted, Scope: policy,
 		Observations: []model.Observation{}, Evidence: []model.Evidence{}, Errors: []model.RunError{},
 	}
 	for _, target := range policy.Allowed {
-		evidence, failures, collectErr := dns.Collect(ctx, resolver, policy, target, dnsLookupTimeout)
+		evidence, failures, collectErr := dns.Collect(ctx, env.resolver, policy, target, dnsLookupTimeout)
 		if collectErr != nil {
 			fmt.Fprintln(stderr, "scopeforge: internal_error: authorization invariant failed")
 			return exitInternal
@@ -139,6 +168,8 @@ func runReconnaissance(
 			break
 		}
 	}
+	finishedAt := env.now()
+	runResult.FinishedAt = &finishedAt
 	runResult.Status = runStatus(runResult)
 
 	if format == "json" {
@@ -150,7 +181,27 @@ func runReconnaissance(
 		fmt.Fprintln(stderr, "scopeforge: internal_error: could not write output")
 		return exitInternal
 	}
+	if saveDir == "" {
+		return exitSuccess
+	}
+	if err := artifact.Write(saveDir, runResult); err != nil {
+		fmt.Fprintf(stderr, "scopeforge: artifact_write_failed: %s\n", artifactWriteMessage(err))
+		return exitInternal
+	}
 	return exitSuccess
+}
+
+func artifactWriteMessage(err error) string {
+	switch {
+	case errors.Is(err, artifact.ErrExists):
+		return "run artifact already exists"
+	case errors.Is(err, artifact.ErrInvalidID):
+		return "run ID is invalid"
+	case errors.Is(err, artifact.ErrInvalidDir):
+		return "save directory is invalid"
+	default:
+		return "could not write run artifact"
+	}
 }
 
 func runStatus(run model.Run) model.RunStatus {
@@ -252,6 +303,7 @@ func printRunUsage(output io.Writer) {
 	fmt.Fprintln(output, "  --target VALUE   Exact DNS name to authorize (repeatable)")
 	fmt.Fprintln(output, "  --collect NAME   Collector to run (dns)")
 	fmt.Fprintln(output, "  --format FORMAT  Output format: text or json (default text)")
+	fmt.Fprintln(output, "  --save-dir DIR   Write one versioned JSON run artifact into DIR")
 }
 
 func printValidateScopeUsage(output io.Writer) {
