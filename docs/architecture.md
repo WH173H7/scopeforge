@@ -295,10 +295,14 @@ decoded without rejecting unknown fields in schema version 1, then validated.
 
 Required schema version 1 checks include: `schema_version` exactly `"1"`;
 present valid `id` matching `--id`; parseable UTC `started_at`/`finished_at`
-with finish not before start; known status; valid targets and exclusions;
-recognized collectors (`dns`); evidence category/record types and TXT
-encoding/truncation consistency; MX priority present; and outcomes with
-required fields. Missing, empty, or unknown `schema_version` is
+with finish not before start; known status; non-empty valid targets and
+exclusions; recognized collectors (`dns`); evidence and outcomes whose targets
+exactly match an allowed target and are not excluded; DNS evidence values that
+match their record semantics (canonical IP addresses, normalized hostnames, Null
+MX `"."`, opaque TXT); TXT-only encoding and truncation metadata; MX priority
+present only on MX records; outcomes restricted to the known DNS code set and
+supported record types; and outcomes with required fields. Missing, empty, or
+unknown `schema_version` is
 `unsupported_artifact_schema`. An internal `id` that does not match `--id` is
 `artifact_id_mismatch`. Other malformed content maps to `invalid_artifact`.
 
@@ -306,7 +310,8 @@ Inspect-run exit codes: malformed flags and invalid format remain 2; missing
 or invalid `--id`/`--run-dir`, not found, unsupported schema, invalid
 artifact, ID mismatch, and oversize are 3; unexpected OS read failures are 1.
 Successful text output is an inspection view that reuses DNS evidence
-rendering, including TXT quoting. Successful JSON output is the canonical
+rendering, including TXT quoting and Go-style quoting of collection-failure
+messages. Successful JSON output is the canonical
 artifact document.
 
 Rendering is implemented separately from policy validation. The text renderer

@@ -21,6 +21,14 @@ var knownRecordTypes = map[string]struct{}{
 	"A": {}, "AAAA": {}, "MX": {}, "NS": {}, "CNAME": {}, "TXT": {},
 }
 
+var knownOutcomeCodes = map[string]struct{}{
+	"no_result":        {},
+	"evidence_limited": {},
+	"lookup_failed":    {},
+	"timeout":          {},
+	"canceled":         {},
+}
+
 func validateDocument(document Document, requestedID string) error {
 	if document.SchemaVersion != SchemaVersion {
 		return ErrUnsupportedSchema
@@ -48,7 +56,7 @@ func validateDocument(document Document, requestedID string) error {
 	if _, ok := knownStatuses[model.RunStatus(document.Status)]; !ok {
 		return ErrInvalid
 	}
-	if err := validateTargets(document.Targets); err != nil {
+	if err := validateAllowedTargets(document.Targets); err != nil {
 		return err
 	}
 	if err := validateTargets(document.Exclusions); err != nil {
@@ -57,8 +65,14 @@ func validateDocument(document Document, requestedID string) error {
 	if err := validateCollectors(document.Collectors); err != nil {
 		return err
 	}
+
+	allowed := targetsFromJSON(document.Targets)
+	excluded := targetsFromJSON(document.Exclusions)
 	for _, item := range document.Evidence {
 		if err := validateEvidence(item); err != nil {
+			return err
+		}
+		if err := validateScopeTarget(modelTarget(item.Target), allowed, excluded); err != nil {
 			return err
 		}
 	}
@@ -66,8 +80,18 @@ func validateDocument(document Document, requestedID string) error {
 		if err := validateOutcome(item); err != nil {
 			return err
 		}
+		if err := validateScopeTarget(modelTarget(item.Target), allowed, excluded); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func validateAllowedTargets(targets []Target) error {
+	if len(targets) == 0 {
+		return ErrInvalid
+	}
+	return validateTargets(targets)
 }
 
 func validateTargets(targets []Target) error {
@@ -102,6 +126,25 @@ func validateTarget(target Target) error {
 	return nil
 }
 
+func validateScopeTarget(target model.Target, allowed, excluded []model.Target) error {
+	if targetInList(excluded, target) {
+		return ErrInvalid
+	}
+	if !targetInList(allowed, target) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func targetInList(list []model.Target, target model.Target) bool {
+	for _, candidate := range list {
+		if candidate == target {
+			return true
+		}
+	}
+	return false
+}
+
 func validateCollectors(collectors []string) error {
 	if len(collectors) == 0 {
 		return ErrInvalid
@@ -124,19 +167,25 @@ func validateEvidence(item Evidence) error {
 	if _, ok := knownRecordTypes[item.RecordType]; !ok {
 		return ErrInvalid
 	}
-	if item.Encoding != "" && item.Encoding != "base64" {
-		return ErrInvalid
-	}
-	if item.Truncated {
-		if item.OriginalLength == nil || *item.OriginalLength < 0 {
+	if item.RecordType != "TXT" {
+		if item.Encoding != "" || item.Truncated || item.OriginalLength != nil {
 			return ErrInvalid
 		}
-	} else if item.OriginalLength != nil {
-		return ErrInvalid
-	}
-	if item.Encoding == "base64" {
-		if _, err := base64.StdEncoding.DecodeString(item.Value); err != nil {
+	} else {
+		if item.Encoding != "" && item.Encoding != "base64" {
 			return ErrInvalid
+		}
+		if item.Truncated {
+			if item.OriginalLength == nil || *item.OriginalLength < 0 {
+				return ErrInvalid
+			}
+		} else if item.OriginalLength != nil {
+			return ErrInvalid
+		}
+		if item.Encoding == "base64" {
+			if _, err := base64.StdEncoding.DecodeString(item.Value); err != nil {
+				return ErrInvalid
+			}
 		}
 	}
 	switch item.RecordType {
@@ -144,13 +193,11 @@ func validateEvidence(item Evidence) error {
 		if item.Priority == nil {
 			return ErrInvalid
 		}
-	default:
+		return validateMXValue(item.Value)
+	case "A", "AAAA":
 		if item.Priority != nil {
 			return ErrInvalid
 		}
-	}
-	switch item.RecordType {
-	case "A", "AAAA":
 		parsed, err := netip.ParseAddr(item.Value)
 		if err != nil {
 			return ErrInvalid
@@ -161,12 +208,38 @@ func validateEvidence(item Evidence) error {
 		if item.RecordType == "AAAA" && !parsed.Is6() {
 			return ErrInvalid
 		}
-	case "TXT":
-		return nil
-	default:
-		if item.Value == "" {
+		if parsed.String() != item.Value {
 			return ErrInvalid
 		}
+	case "TXT":
+		if item.Priority != nil {
+			return ErrInvalid
+		}
+	case "CNAME", "NS":
+		if item.Priority != nil {
+			return ErrInvalid
+		}
+		return validateDNSHostname(item.Value)
+	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validateMXValue(value string) error {
+	if value == "." {
+		return nil
+	}
+	return validateDNSHostname(value)
+}
+
+func validateDNSHostname(value string) error {
+	parsed, err := scope.ParseTarget(value)
+	if err != nil || parsed.Kind != model.TargetDNSName {
+		return ErrInvalid
+	}
+	if parsed.Value != value {
+		return ErrInvalid
 	}
 	return nil
 }
@@ -176,6 +249,12 @@ func validateOutcome(item Error) error {
 		return ErrInvalid
 	}
 	if item.Collector != "dns" {
+		return ErrInvalid
+	}
+	if _, ok := knownOutcomeCodes[item.Code]; !ok {
+		return ErrInvalid
+	}
+	if _, ok := knownRecordTypes[item.RecordType]; !ok {
 		return ErrInvalid
 	}
 	return validateTarget(item.Target)

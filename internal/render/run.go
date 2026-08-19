@@ -121,7 +121,7 @@ func writeDNSReport(output io.Writer, run model.Run) error {
 	for _, failure := range failures {
 		if _, err := fmt.Fprintf(
 			output, "  %s  %-4s  %s: %s\n",
-			failure.Target.Value, failure.RecordType, failure.Code, failure.Message,
+			failure.Target.Value, failure.RecordType, failure.Code, strconv.Quote(failure.Message),
 		); err != nil {
 			return err
 		}

@@ -126,6 +126,38 @@ func TestReadValidationFailures(t *testing.T) {
 		{name: "malformed TXT encoding", want: ErrInvalid, edit: func(raw map[string]any) {
 			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "TXT", "value": "x", "encoding": "hex"}}
 		}},
+		{name: "empty targets", want: ErrInvalid, edit: func(raw map[string]any) { raw["targets"] = []any{} }},
+		{name: "CNAME control characters", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "CNAME", "value": "edge\x1b.example.com"}}
+		}},
+		{name: "NS control characters", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "NS", "value": "ns\n.example.com"}}
+		}},
+		{name: "MX control characters", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "MX", "value": "mail\r.example.com", "priority": 10}}
+		}},
+		{name: "unknown outcome code", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["errors"] = []any{map[string]any{"code": "owned", "message": "x", "collector": "dns", "target": map[string]any{"kind": "dns", "value": "example.com"}, "record_type": "A"}}
+		}},
+		{name: "unknown outcome record type", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["errors"] = []any{map[string]any{"code": "lookup_failed", "message": "x", "collector": "dns", "target": map[string]any{"kind": "dns", "value": "example.com"}, "record_type": "SRV"}}
+		}},
+		{name: "evidence target outside scope", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "other.example"}, "category": "dns_record", "record_type": "A", "value": "192.0.2.10"}}
+		}},
+		{name: "outcome target outside scope", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["errors"] = []any{map[string]any{"code": "no_result", "message": "DNS lookup returned no records", "collector": "dns", "target": map[string]any{"kind": "dns", "value": "other.example"}, "record_type": "MX"}}
+		}},
+		{name: "excluded target evidence", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["exclusions"] = []any{map[string]any{"kind": "dns", "value": "example.com"}}
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "A", "value": "192.0.2.10"}}
+		}},
+		{name: "A record TXT encoding metadata", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "A", "value": "192.0.2.10", "encoding": "base64"}}
+		}},
+		{name: "NS record TXT truncation metadata", want: ErrInvalid, edit: func(raw map[string]any) {
+			raw["evidence"] = []any{map[string]any{"target": map[string]any{"kind": "dns", "value": "example.com"}, "category": "dns_record", "record_type": "NS", "value": "ns.example.com", "truncated": true, "original_length": 12}}
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -142,6 +174,24 @@ func TestReadValidationFailures(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestReadPreservesUnicodeTXT(t *testing.T) {
+	dir := t.TempDir()
+	document := mutateSampleJSON(t, func(raw map[string]any) {
+		raw["evidence"] = []any{map[string]any{
+			"target":   map[string]any{"kind": "dns", "value": "example.com"},
+			"category": "dns_record", "record_type": "TXT", "value": "café",
+		}}
+	})
+	writeJSON(t, dir, sampleRun().ID, document)
+	loaded, err := Read(dir, sampleRun().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Evidence) != 1 || loaded.Evidence[0].Value != "café" {
+		t.Fatalf("evidence = %#v", loaded.Evidence)
 	}
 }
 
