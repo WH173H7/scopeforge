@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/WH173H7/scopeforge/internal/model"
-	"github.com/WH173H7/scopeforge/internal/render"
 )
 
 func TestNewIDIsFilesystemSafeAndDeterministic(t *testing.T) {
@@ -24,7 +23,7 @@ func TestNewIDIsFilesystemSafeAndDeterministic(t *testing.T) {
 	if id != "20260818T150405Z-abababababababab" {
 		t.Fatalf("NewID() = %q", id)
 	}
-	if !validID(id) || strings.Contains(id, "example.com") {
+	if !ValidID(id) || strings.Contains(id, "example.com") {
 		t.Fatalf("unsafe ID %q", id)
 	}
 }
@@ -61,7 +60,7 @@ func TestWriteCreatesOwnerOnlyJSONArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	var encoded bytes.Buffer
-	if err := render.RunJSON(&encoded, run); err != nil {
+	if err := Encode(&encoded, run); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(body, encoded.Bytes()) {
@@ -289,7 +288,7 @@ func sampleRun() model.Run {
 	originalLength := 5000
 	return model.Run{
 		ID: "20260818T150405Z-abababababababab", StartedAt: started, FinishedAt: &finished,
-		Status: model.RunCompleted,
+		Status: model.RunCompleted, Collectors: []string{"dns"},
 		Scope: model.ScopePolicy{
 			Allowed:  []model.Target{target},
 			Excluded: []model.Target{{Kind: model.TargetDNSName, Value: "ignored.example"}},

@@ -6,8 +6,8 @@ displays explicit exact-match scope policies and collects DNS A, AAAA, CNAME,
 MX, NS, and TXT evidence for explicitly authorised DNS names.
 
 ScopeForge is intended to grow toward passive DNS, certificate, RDAP, and HTTP
-metadata collection; run inspection; run comparison; JSON output; and
-human-readable reports. Active assessment is outside the first milestone.
+metadata collection; run comparison; JSON output; and human-readable reports.
+Active assessment is outside the first milestone.
 
 ## Current commands
 
@@ -16,6 +16,7 @@ scopeforge help
 scopeforge version
 scopeforge validate-scope --target VALUE [options]
 scopeforge run --target VALUE --collect dns [--save-dir DIR] [options]
+scopeforge inspect-run --run-dir DIR --id RUN_ID [options]
 ```
 
 `--target` and `--exclude` are repeatable and accept exact DNS names or IP
@@ -83,6 +84,22 @@ artifacts as potentially sensitive reconnaissance data.
 
 If the artifact cannot be written, stdout still contains the run result and
 the process exits non-zero with `artifact_write_failed`.
+
+## Inspecting saved runs
+
+`inspect-run` is read-only. It does not collect DNS, modify artifacts, or treat
+saved targets as authorization for new work.
+
+```sh
+scopeforge inspect-run --run-dir ./runs --id 20260818T150405Z-abababababababab
+scopeforge inspect-run --run-dir ./runs --id 20260818T150405Z-abababababababab --format json
+```
+
+The ID must match the artifact filename and the `id` field inside the JSON.
+Only schema version `1` is supported. Unknown additive fields in that schema
+are ignored; an unknown `schema_version` is rejected. Artifacts larger than
+16 MiB are not loaded. Symlink artifact paths are rejected. JSON inspection
+re-emits the canonical schema version 1 document.
 
 ## Development
 

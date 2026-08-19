@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestRunTextIsDeterministic(t *testing.T) {
 	if err := RunText(&output, run); err != nil {
 		t.Fatal(err)
 	}
-	want := "Run partial\n\nTargets\n  DNS  example.com\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.provider.net\n  example.com  MX     0  .\n  example.com  MX     10  mail1.example.net\n  example.com  MX     20  mail2.example.net\n  example.com  NS     ns2.example.net\n  example.com  TXT    \"line1\\n\\r\\t\\x1b[31mline2\"\n\nDNS absence\n  example.com  CNAME  no records\n\nEvidence limits\n  example.com  TXT    omitted 2 records and 9000 bytes\n\nCollection failures\n  example.com  AAAA  timeout: DNS lookup timed out\n"
+	want := "Run partial\n\nTargets\n  DNS  example.com\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  A      192.0.2.20\n  example.com  AAAA   2001:db8::1\n  example.com  CNAME  edge.provider.net\n  example.com  MX     0  .\n  example.com  MX     10  mail1.example.net\n  example.com  MX     20  mail2.example.net\n  example.com  NS     ns2.example.net\n  example.com  TXT    \"line1\\n\\r\\t\\x1b[31mline2\"\n\nDNS absence\n  example.com  CNAME  no records\n\nEvidence limits\n  example.com  TXT    omitted 2 records and 9000 bytes\n\nCollection failures\n  example.com  AAAA  timeout: \"DNS lookup timed out\"\n"
 	if output.String() != want {
 		t.Fatalf("RunText() = %q, want %q", output.String(), want)
 	}
@@ -166,6 +167,59 @@ func TestRunJSONIncludesIdentityTimestampsAndExclusions(t *testing.T) {
 	want := "{\"schema_version\":\"1\",\"id\":\"20260818T150405Z-aaaaaaaaaaaaaaaa\",\"started_at\":\"2026-08-18T15:04:05Z\",\"finished_at\":\"2026-08-18T15:04:07Z\",\"status\":\"completed\",\"targets\":[{\"kind\":\"dns\",\"value\":\"example.com\"}],\"exclusions\":[{\"kind\":\"dns\",\"value\":\"ignored.example\"}],\"collectors\":[\"dns\"],\"evidence\":[{\"target\":{\"kind\":\"dns\",\"value\":\"example.com\"},\"category\":\"dns_record\",\"record_type\":\"A\",\"value\":\"192.0.2.10\"}],\"errors\":[]}\n"
 	if output.String() != want {
 		t.Fatalf("RunJSON() = %q, want %q", output.String(), want)
+	}
+}
+
+func TestInspectTextQuotesFailureMessages(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	run := model.Run{
+		Status: model.RunCompleted,
+		Scope:  model.ScopePolicy{Allowed: []model.Target{target}},
+		Errors: []model.RunError{
+			{
+				Code: "lookup_failed", Message: "owned\n\x1b[31m", Collector: "dns",
+				Target: &target, RecordType: "AAAA", Retryable: true,
+			},
+		},
+	}
+	var output bytes.Buffer
+	if err := InspectText(&output, run); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "\nowned\n") {
+		t.Fatalf("InspectText() emitted raw control characters: %q", text)
+	}
+	if !strings.Contains(text, `"owned\n\x1b[31m"`) {
+		t.Fatalf("InspectText() = %q", text)
+	}
+}
+
+func TestInspectTextIsDeterministic(t *testing.T) {
+	target := model.Target{Kind: model.TargetDNSName, Value: "example.com"}
+	started := time.Date(2026, 8, 18, 15, 4, 5, 0, time.UTC)
+	finished := started.Add(2 * time.Second)
+	priority := uint16(0)
+	run := model.Run{
+		ID: "20260818T150405Z-abababababababab", StartedAt: started, FinishedAt: &finished,
+		Status: model.RunCompleted, Collectors: []string{"dns"},
+		Scope: model.ScopePolicy{Allowed: []model.Target{target}},
+		Evidence: []model.Evidence{
+			{Target: target, Category: "dns_record", RecordType: "A", Value: "192.0.2.10"},
+			{Target: target, Category: "dns_record", RecordType: "MX", Value: ".", Priority: &priority},
+			{Target: target, Category: "dns_record", RecordType: "TXT", Value: "café"},
+		},
+		Errors: []model.RunError{
+			{Code: "no_result", Message: "DNS lookup returned no records", Collector: "dns", Target: &target, RecordType: "CNAME"},
+		},
+	}
+	var output bytes.Buffer
+	if err := InspectText(&output, run); err != nil {
+		t.Fatal(err)
+	}
+	want := "Saved reconnaissance run\n\nID:        20260818T150405Z-abababababababab\nStarted:   2026-08-18T15:04:05Z\nFinished:  2026-08-18T15:04:07Z\nStatus:    completed\n\nTargets\n  DNS  example.com\n\nExclusions\n  none\n\nCollectors\n  dns\n\nDNS evidence\n  example.com  A      192.0.2.10\n  example.com  MX     0  .\n  example.com  TXT    \"café\"\n\nDNS absence\n  example.com  CNAME  no records\n\nCollection failures\n  none\n"
+	if output.String() != want {
+		t.Fatalf("InspectText() = %q, want %q", output.String(), want)
 	}
 }
 

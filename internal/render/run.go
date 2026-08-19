@@ -1,52 +1,15 @@
 package render
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strconv"
 	"time"
 
+	"github.com/WH173H7/scopeforge/internal/artifact"
 	"github.com/WH173H7/scopeforge/internal/model"
 )
-
-const runSchemaVersion = "1"
-
-type runResult struct {
-	SchemaVersion string            `json:"schema_version"`
-	ID            string            `json:"id,omitempty"`
-	StartedAt     string            `json:"started_at,omitempty"`
-	FinishedAt    string            `json:"finished_at,omitempty"`
-	Status        model.RunStatus   `json:"status"`
-	Targets       []outputTarget    `json:"targets"`
-	Exclusions    []outputTarget    `json:"exclusions"`
-	Collectors    []string          `json:"collectors"`
-	Evidence      []runEvidence     `json:"evidence"`
-	Errors        []collectionError `json:"errors"`
-}
-
-type runEvidence struct {
-	Target         outputTarget `json:"target"`
-	Category       string       `json:"category"`
-	RecordType     string       `json:"record_type"`
-	Value          string       `json:"value"`
-	Priority       *uint16      `json:"priority,omitempty"`
-	Encoding       string       `json:"encoding,omitempty"`
-	Truncated      bool         `json:"truncated,omitempty"`
-	OriginalLength *int         `json:"original_length,omitempty"`
-}
-
-type collectionError struct {
-	Code           string       `json:"code"`
-	Message        string       `json:"message"`
-	Collector      string       `json:"collector"`
-	Target         outputTarget `json:"target"`
-	RecordType     string       `json:"record_type"`
-	Retryable      bool         `json:"retryable"`
-	OmittedRecords int          `json:"omitted_records,omitempty"`
-	OmittedBytes   int          `json:"omitted_bytes,omitempty"`
-}
 
 // RunText writes a deterministic human-readable reconnaissance result.
 func RunText(output io.Writer, run model.Run) error {
@@ -56,6 +19,44 @@ func RunText(output io.Writer, run model.Run) error {
 	if err := writeTextTargets(output, ordered(run.Scope.Allowed)); err != nil {
 		return err
 	}
+	return writeDNSReport(output, run)
+}
+
+// InspectText writes a deterministic human-readable saved-run inspection.
+func InspectText(output io.Writer, run model.Run) error {
+	finished := ""
+	if run.FinishedAt != nil {
+		finished = run.FinishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if _, err := fmt.Fprintf(output, "Saved reconnaissance run\n\nID:        %s\nStarted:   %s\nFinished:  %s\nStatus:    %s\n\nTargets\n",
+		run.ID, run.StartedAt.UTC().Format(time.RFC3339Nano), finished, run.Status); err != nil {
+		return err
+	}
+	if err := writeTextTargets(output, ordered(run.Scope.Allowed)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(output, "\nExclusions"); err != nil {
+		return err
+	}
+	if err := writeTextTargets(output, ordered(run.Scope.Excluded)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(output, "\nCollectors"); err != nil {
+		return err
+	}
+	collectors := run.Collectors
+	if len(collectors) == 0 {
+		collectors = []string{"dns"}
+	}
+	for _, collector := range collectors {
+		if _, err := fmt.Fprintf(output, "  %s\n", collector); err != nil {
+			return err
+		}
+	}
+	return writeDNSReport(output, run)
+}
+
+func writeDNSReport(output io.Writer, run model.Run) error {
 	if _, err := fmt.Fprintln(output, "\nDNS evidence"); err != nil {
 		return err
 	}
@@ -120,7 +121,7 @@ func RunText(output io.Writer, run model.Run) error {
 	for _, failure := range failures {
 		if _, err := fmt.Fprintf(
 			output, "  %s  %-4s  %s: %s\n",
-			failure.Target.Value, failure.RecordType, failure.Code, failure.Message,
+			failure.Target.Value, failure.RecordType, failure.Code, strconv.Quote(failure.Message),
 		); err != nil {
 			return err
 		}
@@ -148,55 +149,7 @@ func splitOutcomes(results []model.RunError) ([]model.RunError, []model.RunError
 
 // RunJSON writes the versioned machine-readable reconnaissance result.
 func RunJSON(output io.Writer, run model.Run) error {
-	failures := orderedFailures(run.Errors)
-	errors := make([]collectionError, 0, len(failures))
-	for _, failure := range failures {
-		if failure.Target == nil {
-			continue
-		}
-		errors = append(errors, collectionError{
-			Code: failure.Code, Message: failure.Message, Collector: failure.Collector,
-			Target:     outputTarget{Kind: jsonKind(failure.Target.Kind), Value: failure.Target.Value},
-			RecordType: failure.RecordType, Retryable: failure.Retryable,
-			OmittedRecords: failure.OmittedRecords, OmittedBytes: failure.OmittedBytes,
-		})
-	}
-	evidence := orderedEvidence(run.Evidence)
-	outputEvidence := make([]runEvidence, 0, len(evidence))
-	for _, item := range evidence {
-		outputEvidence = append(outputEvidence, runEvidence{
-			Target:   outputTarget{Kind: jsonKind(item.Target.Kind), Value: item.Target.Value},
-			Category: item.Category, RecordType: item.RecordType, Value: item.Value, Priority: item.Priority,
-			Encoding: item.Encoding, Truncated: item.Truncated, OriginalLength: item.OriginalLength,
-		})
-	}
-	result := runResult{
-		SchemaVersion: runSchemaVersion,
-		ID:            run.ID,
-		StartedAt:     rfc3339UTC(run.StartedAt),
-		FinishedAt:    rfc3339UTCPointer(run.FinishedAt),
-		Status:        run.Status,
-		Targets:       outputTargets(ordered(run.Scope.Allowed)),
-		Exclusions:    outputTargets(ordered(run.Scope.Excluded)),
-		Collectors:    []string{"dns"},
-		Evidence:      outputEvidence,
-		Errors:        errors,
-	}
-	return json.NewEncoder(output).Encode(result)
-}
-
-func rfc3339UTC(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339Nano)
-}
-
-func rfc3339UTCPointer(value *time.Time) string {
-	if value == nil {
-		return ""
-	}
-	return rfc3339UTC(*value)
+	return artifact.Encode(output, run)
 }
 
 func orderedEvidence(evidence []model.Evidence) []model.Evidence {

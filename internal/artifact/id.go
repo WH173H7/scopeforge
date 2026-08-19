@@ -26,7 +26,7 @@ func NewID(now time.Time, random io.Reader) (string, error) {
 	return fmt.Sprintf("%s-%s", now.UTC().Format("20060102T150405Z"), hex.EncodeToString(nonce[:])), nil
 }
 
-func validID(id string) bool {
+func ValidID(id string) bool {
 	if id == "" || id != filepath.Base(id) || strings.Contains(id, "..") {
 		return false
 	}

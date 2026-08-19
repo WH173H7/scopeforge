@@ -92,6 +92,9 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, en
 	if args[0] == "run" {
 		return runReconnaissance(ctx, args[1:], stdout, stderr, env)
 	}
+	if args[0] == "inspect-run" {
+		return runInspect(args[1:], stdout, stderr)
+	}
 
 	fmt.Fprintf(stderr, "scopeforge: unknown command %q\n", args[0])
 	printUsage(stderr)
@@ -274,6 +277,76 @@ func runValidateScope(args []string, stdout, stderr io.Writer) int {
 	return exitSuccess
 }
 
+func runInspect(args []string, stdout, stderr io.Writer) int {
+	runDir, id, format := "", "", "text"
+	flags := flag.NewFlagSet("inspect-run", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&runDir, "run-dir", runDir, "directory containing saved run artifacts")
+	flags.StringVar(&id, "id", id, "generated run ID of the artifact to inspect")
+	flags.StringVar(&format, "format", format, "output format: text or json")
+
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printInspectRunUsage(stdout)
+			return exitSuccess
+		}
+		return expectedError(stdout, stderr, format, "invalid_usage", "invalid command usage", exitUsage)
+	}
+	if flags.NArg() != 0 {
+		return expectedError(stdout, stderr, format, "invalid_usage", "unexpected positional arguments", exitUsage)
+	}
+	if format != "text" && format != "json" {
+		return expectedError(stdout, stderr, "text", "invalid_format", "format must be text or json", exitUsage)
+	}
+	if runDir == "" {
+		return expectedError(stdout, stderr, format, "missing_run_dir", "run directory is required", exitValidation)
+	}
+	if id == "" {
+		return expectedError(stdout, stderr, format, "missing_run_id", "run ID is required", exitValidation)
+	}
+	if !artifact.ValidID(id) {
+		return expectedError(stdout, stderr, format, "invalid_run_id", "run ID is invalid", exitValidation)
+	}
+
+	loaded, err := artifact.Read(runDir, id)
+	if err != nil {
+		code, message, exitCode := inspectError(err)
+		return expectedError(stdout, stderr, format, code, message, exitCode)
+	}
+
+	if format == "json" {
+		err = render.RunJSON(stdout, loaded)
+	} else {
+		err = render.InspectText(stdout, loaded)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "scopeforge: internal_error: could not write output")
+		return exitInternal
+	}
+	return exitSuccess
+}
+
+func inspectError(err error) (code, message string, exitCode int) {
+	switch {
+	case errors.Is(err, artifact.ErrNotFound):
+		return "artifact_not_found", "run artifact not found", exitValidation
+	case errors.Is(err, artifact.ErrTooLarge):
+		return "artifact_too_large", "run artifact exceeds the read size limit", exitValidation
+	case errors.Is(err, artifact.ErrUnsupportedSchema):
+		return "unsupported_artifact_schema", "run artifact schema is unsupported", exitValidation
+	case errors.Is(err, artifact.ErrIDMismatch):
+		return "artifact_id_mismatch", "artifact ID does not match the requested ID", exitValidation
+	case errors.Is(err, artifact.ErrInvalidID):
+		return "invalid_run_id", "run ID is invalid", exitValidation
+	case errors.Is(err, artifact.ErrInvalidDir):
+		return "invalid_usage", "run directory is invalid", exitUsage
+	case errors.Is(err, artifact.ErrInvalid):
+		return "invalid_artifact", "run artifact is invalid", exitValidation
+	default:
+		return "artifact_read_failed", "could not read run artifact", exitInternal
+	}
+}
+
 func expectedError(stdout, stderr io.Writer, format, code, message string, exitCode int) int {
 	if format == "json" {
 		if err := render.ErrorJSON(stdout, code, message); err != nil {
@@ -291,6 +364,7 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output)
 	fmt.Fprintln(output, "Commands:")
 	fmt.Fprintln(output, "  help            Show this help")
+	fmt.Fprintln(output, "  inspect-run     Display a saved reconnaissance artifact")
 	fmt.Fprintln(output, "  run             Collect evidence for an explicit scope")
 	fmt.Fprintln(output, "  validate-scope  Validate and display an explicit scope policy")
 	fmt.Fprintln(output, "  version         Show the version")
@@ -304,6 +378,15 @@ func printRunUsage(output io.Writer) {
 	fmt.Fprintln(output, "  --collect NAME   Collector to run (dns)")
 	fmt.Fprintln(output, "  --format FORMAT  Output format: text or json (default text)")
 	fmt.Fprintln(output, "  --save-dir DIR   Write one versioned JSON run artifact into DIR")
+}
+
+func printInspectRunUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: scopeforge inspect-run --run-dir DIR --id RUN_ID [options]")
+	fmt.Fprintln(output)
+	fmt.Fprintln(output, "Options:")
+	fmt.Fprintln(output, "  --run-dir DIR    Directory containing saved run artifacts")
+	fmt.Fprintln(output, "  --id RUN_ID      Generated run ID of the artifact to inspect")
+	fmt.Fprintln(output, "  --format FORMAT  Output format: text or json (default text)")
 }
 
 func printValidateScopeUsage(output io.Writer) {
